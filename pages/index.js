@@ -1,5 +1,3 @@
-import Image from "next/image";
-
 export default function Home() {
   const azul = "#0047AB";
   const amarillo = "#FFD100";
@@ -22,12 +20,14 @@ export default function Home() {
         textAlign: "center",
         boxShadow: "0 10px 30px rgba(0,0,0,.3)"
       }}>
-        <Image
-          src="/escudo.png"
-          width={140}
-          height={140}
-          alt="CARC"
-        />
+    <img
+        src="/escudo.png"
+        alt="CARC"
+        width="140"
+        height="140"
+        style={{ display: "block", margin: "0 auto" }}
+      />
+
 
         <h1 style={{color: azul, marginTop: 12}}>
           Control Acceso CARC
