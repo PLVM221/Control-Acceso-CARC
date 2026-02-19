@@ -12,11 +12,7 @@ export default function Home() {
   }, []);
 
   const guardarHistorial = (dni) => {
-    const nuevo = {
-      dni,
-      fecha: new Date().toLocaleString(),
-    };
-
+    const nuevo = { dni, fecha: new Date().toLocaleString() };
     const actualizado = [nuevo, ...historial].slice(0, 10);
     setHistorial(actualizado);
     localStorage.setItem("accesos", JSON.stringify(actualizado));
@@ -78,18 +74,14 @@ export default function Home() {
             style={styles.input}
           />
 
-          <button style={styles.btnBuscar} onClick={() => buscarDni(dni)}>
-            Buscar
-          </button>
+          <button style={styles.btnBuscar}>Buscar</button>
         </div>
 
         <button style={styles.btnLimpiar} onClick={limpiar}>
           Limpiar
         </button>
 
-        <div style={styles.tip}>
-          Tip: al llegar a 8 dígitos, busca solo.
-        </div>
+        <div style={styles.tip}>Tip: al llegar a 8 dígitos, busca solo.</div>
 
         {error && (
           <div
@@ -138,7 +130,7 @@ export default function Home() {
           ))}
         </div>
 
-        <div style={styles.footer}>Rosario Central</div>
+        <div style={styles.footer}>Rosario Central 💙💛</div>
       </div>
     </div>
   );
@@ -169,11 +161,12 @@ const styles = {
   },
   buscador: {
     display: "flex",
-    gap: 10,
+    gap: 12,
     marginTop: 15,
+    justifyContent: "center",
   },
   input: {
-    flex: 1,
+    width: "65%",   // 👈 ACÁ achicamos el largo
     padding: 12,
     fontSize: 18,
     borderRadius: 10,
@@ -182,7 +175,7 @@ const styles = {
   btnBuscar: {
     background: "#ffd100",
     border: "none",
-    padding: "12px 18px",
+    padding: "12px 20px",
     borderRadius: 10,
     fontWeight: "bold",
   },
