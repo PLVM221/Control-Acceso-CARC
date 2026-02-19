@@ -1,65 +1,45 @@
-import fs from "fs";
-import path from "path";
-
-const DATA_PATH = path.join(process.cwd(), "data", "personas.json");
-
-function readJson() {
-  if (!fs.existsSync(DATA_PATH)) return [];
-  const raw = fs.readFileSync(DATA_PATH, "utf8");
-  return JSON.parse(raw || "[]");
-}
-
-function writeJson(arr) {
-  fs.mkdirSync(path.dirname(DATA_PATH), { recursive: true });
-  fs.writeFileSync(DATA_PATH, JSON.stringify(arr, null, 2), "utf8");
-}
+import { supabaseAdmin } from "../../../lib/supabaseAdmin";
 
 function isAuth(req) {
   const token = req.headers.authorization?.replace("Bearer ", "");
-  return !!token; // demo simple
+  return !!token; // demo simple (si querés, lo endurecemos después)
 }
 
-export default function handler(req, res) {
+export default async function handler(req, res) {
   if (!isAuth(req)) return res.status(401).json({ ok: false, error: "No autorizado" });
-
-  if (req.method === "GET") {
-    const personas = readJson();
-    return res.status(200).json({ ok: true, personas });
-  }
 
   if (req.method === "POST") {
     const { modo, personas } = req.body || {};
-    if (!Array.isArray(personas)) {
-      return res.status(400).json({ ok: false, error: "personas debe ser array" });
-    }
+    if (!Array.isArray(personas)) return res.status(400).json({ ok: false, error: "personas debe ser array" });
+    if (!["REEMPLAZAR", "AGREGAR"].includes(modo)) return res.status(400).json({ ok: false, error: "modo inválido" });
 
-    const actuales = readJson();
+    // Normalizar keys (soporta varias variantes)
+    const rows = personas
+      .map((p) => ({
+        dni: String(p.dni || "").replace(/\D/g, ""),
+        nombre: String(p.nombre || "").trim(),
+        tipo_ingreso: String(p.tipoIngreso ?? p.tipo_ingreso ?? "").trim(),
+        puerta_acceso: String(p.puertaAcceso ?? p.puerta_acceso ?? p.puerta ?? "").trim(),
+        ubicacion: String(p.ubicacion ?? "").trim(),
+        cuota: Number(p.cuota ?? 1),
+        updated_at: new Date().toISOString(),
+      }))
+      .filter((p) => p.dni && p.nombre);
 
-    // Normalizamos nombres de campos esperados
-    const normalizadas = personas.map((p) => ({
-      dni: String(p.dni || "").trim(),
-      nombre: String(p.nombre || "").trim(),
-      tipoIngreso: String(p.tipoIngreso || "").trim(),
-      puertaAcceso: String(p.puertaAcceso || "").trim(),
-      ubicacion: String(p.ubicacion || "").trim(),
-      cuota: Number(p.cuota ?? 1), // 1 por defecto
-    })).filter(p => p.dni);
-
-    let nuevas = actuales;
+    if (!rows.length) return res.status(400).json({ ok: false, error: "No hay filas válidas" });
 
     if (modo === "REEMPLAZAR") {
-      nuevas = normalizadas;
-    } else if (modo === "AGREGAR") {
-      // Agrega/actualiza por DNI
-      const map = new Map(actuales.map(p => [String(p.dni), p]));
-      for (const p of normalizadas) map.set(String(p.dni), p);
-      nuevas = Array.from(map.values());
-    } else {
-      return res.status(400).json({ ok: false, error: "modo debe ser REEMPLAZAR o AGREGAR" });
+      // Borrar todo
+      const del = await supabaseAdmin.from("personas").delete().neq("dni", "__never__");
+      if (del.error) return res.status(500).json({ ok: false, error: "No se pudo borrar" });
     }
 
-    writeJson(nuevas);
-    return res.status(200).json({ ok: true, total: nuevas.length });
+    // Upsert por DNI
+    const up = await supabaseAdmin.from("personas").upsert(rows, { onConflict: "dni" });
+    if (up.error) return res.status(500).json({ ok: false, error: "No se pudo guardar" });
+
+    const count = await supabaseAdmin.from("personas").select("dni", { count: "exact", head: true });
+    return res.status(200).json({ ok: true, total: count.count ?? null });
   }
 
   return res.status(405).json({ ok: false });
