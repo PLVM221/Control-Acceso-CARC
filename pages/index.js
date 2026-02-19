@@ -43,11 +43,15 @@ export default function Home() {
         <h1 style={{ color: "#0047ab", marginTop: 12 }}>Control Acceso CARC</h1>
 
         <input
-          value={dni}
-          onChange={(e) => setDni(e.target.value)}
-          placeholder="DNI"
-          style={{ width: "100%", padding: 10, marginTop: 10 }}
-        />
+  type="tel"
+  inputMode="numeric"
+  pattern="[0-9]*"
+  value={dni}
+  onChange={(e) => setDni(e.target.value.replace(/\D/g, ""))}
+  placeholder="DNI"
+  style={{ width: "100%", padding: 12, marginTop: 10, fontSize: 20 }}
+/>
+
 
         <button
           onClick={buscar}
