@@ -105,7 +105,7 @@ export default function Home() {
         ))}
 
         <div style={styles.footer}>
-          Rosario Central 💙💛
+          Rosario Central
         </div>
       </div>
     </div>
