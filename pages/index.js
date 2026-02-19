@@ -138,7 +138,7 @@ export default function Home() {
           ))}
         </div>
 
-        <div style={styles.footer}>Rosario Central 💙💛</div>
+        <div style={styles.footer}>Rosario Central</div>
       </div>
     </div>
   );
