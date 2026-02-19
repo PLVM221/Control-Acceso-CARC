@@ -1,1 +1,5 @@
 
+[
+  { "dni": "123", "nombre": "Juan Perez", "sector": "Acceso Tribuna" },
+  { "dni": "456", "nombre": "Maria Gomez", "sector": "Acceso Platea" }
+]
