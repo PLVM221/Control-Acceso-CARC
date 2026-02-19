@@ -1,50 +1,44 @@
 export default function Home() {
-  const azul = "#0047AB";
-  const amarillo = "#FFD100";
-
   return (
     <div style={{
+      background: "#0047AB",
       minHeight: "100vh",
-      background: azul,
       display: "flex",
       alignItems: "center",
-      justifyContent: "center",
-      fontFamily: "system-ui"
+      justifyContent: "center"
     }}>
       <div style={{
         background: "white",
-        borderRadius: 16,
-        padding: 24,
-        maxWidth: 420,
-        width: "100%",
+        padding: 40,
+        borderRadius: 20,
         textAlign: "center",
-        boxShadow: "0 10px 30px rgba(0,0,0,.3)"
+        width: 350
       }}>
-    <img
-        src="/escudo.png"
-        alt="CARC"
-        width="140"
-        height="140"
-        style={{ display: "block", margin: "0 auto" }}
-      />
 
+        <img 
+          src="/logo.png" 
+          alt="CARC" 
+          style={{ width: 120, marginBottom: 15 }}
+        />
 
-        <h1 style={{color: azul, marginTop: 12}}>
+        <h1 style={{ color: "#0047AB" }}>
           Control Acceso CARC
         </h1>
 
-        <p style={{color: "#333"}}>
+        <p>
           Sistema online funcionando ✅
         </p>
 
         <div style={{
-          background: amarillo,
+          background: "#FFD100",
           padding: 10,
           borderRadius: 10,
-          fontWeight: "bold"
+          fontWeight: "bold",
+          marginTop: 15
         }}>
           Rosario Central 💙💛
         </div>
+
       </div>
     </div>
   );
