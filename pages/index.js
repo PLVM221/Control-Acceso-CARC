@@ -19,21 +19,30 @@ export default function Home() {
   };
 
   const buscarDni = async (valor) => {
+    const clean = String(valor || "").replace(/\D/g, "");
+
+    // 👇 Permitimos buscar DNIs cortos (pero no vacío)
+    if (!clean) {
+      setError("Ingresá un DNI");
+      setResultado(null);
+      return;
+    }
+
     setError("");
     setResultado(null);
 
     try {
-      const res = await fetch(`/api/buscar?dni=${valor}`);
+      const res = await fetch(`/api/buscar?dni=${clean}`);
       const data = await res.json();
 
       if (!data.found) {
         setError("Persona no encontrada");
-        guardarHistorial(valor);
+        guardarHistorial(clean);
         return;
       }
 
       setResultado(data.persona);
-      guardarHistorial(valor);
+      guardarHistorial(clean);
     } catch {
       setError("Error de conexión con el servidor");
     }
@@ -43,6 +52,7 @@ export default function Home() {
     const value = e.target.value.replace(/\D/g, "");
     setDni(value);
 
+    // ✅ Auto SOLO cuando llega a 8 dígitos
     if (value.length === 8) {
       buscarDni(value);
     }
@@ -57,7 +67,7 @@ export default function Home() {
   return (
     <div style={styles.fondo}>
       <div style={styles.card}>
-        <img src="/logo.png" style={styles.logo} />
+        <img src="/logo.png" style={styles.logo} alt="CARC" />
 
         <h1 style={styles.titulo}>Control Acceso CARC</h1>
         <p>Ingrese DNI para validar acceso</p>
@@ -67,21 +77,36 @@ export default function Home() {
             type="tel"
             inputMode="numeric"
             pattern="[0-9]*"
-            maxLength="8"
             value={dni}
             onChange={handleChange}
             placeholder="DNI (solo números)"
             style={styles.input}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") buscarDni(dni);
+            }}
           />
 
-          <button style={styles.btnBuscar}>Buscar</button>
+          <button
+            style={{
+              ...styles.btnBuscar,
+              opacity: dni.length > 0 ? 1 : 0.5,
+              cursor: dni.length > 0 ? "pointer" : "not-allowed",
+            }}
+            onClick={() => buscarDni(dni)}
+            disabled={dni.length === 0}
+          >
+            Buscar
+          </button>
         </div>
 
         <button style={styles.btnLimpiar} onClick={limpiar}>
           Limpiar
         </button>
 
-        <div style={styles.tip}>Tip: al llegar a 8 dígitos, busca solo.</div>
+        <div style={styles.tip}>
+          Tip: al llegar a <b>8</b> dígitos, busca solo. Si es menor, tocá{" "}
+          <b>Buscar</b>.
+        </div>
 
         {error && (
           <div
@@ -130,7 +155,7 @@ export default function Home() {
           ))}
         </div>
 
-        <div style={styles.footer}>Rosario Central</div>
+        <div style={styles.footer}>Rosario Central 💙💛</div>
       </div>
     </div>
   );
@@ -143,6 +168,7 @@ const styles = {
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
+    fontFamily: "Lexend, system-ui, sans-serif",
   },
   card: {
     background: "white",
@@ -152,13 +178,9 @@ const styles = {
     maxWidth: 420,
     textAlign: "center",
   },
-  logo: {
-    width: 90,
-    marginBottom: 10,
-  },
-  titulo: {
-    color: "#0b4db3",
-  },
+  logo: { width: 90, marginBottom: 10 },
+  titulo: { color: "#0b4db3" },
+
   buscador: {
     display: "flex",
     gap: 12,
@@ -166,7 +188,7 @@ const styles = {
     justifyContent: "center",
   },
   input: {
-    width: "65%",   // 👈 ACÁ achicamos el largo
+    width: "65%",
     padding: 12,
     fontSize: 18,
     borderRadius: 10,
