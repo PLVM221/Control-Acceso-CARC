@@ -90,7 +90,7 @@ export default function Home() {
             fontWeight: "bold",
           }}
         >
-          Rosario Central 💙💛
+          Rosario Central
         </div>
       </div>
     </div>
