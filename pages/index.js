@@ -6,36 +6,51 @@ export default function Home() {
   const [error, setError] = useState("");
   const [historial, setHistorial] = useState([]);
 
+  useEffect(() => {
+    const saved = JSON.parse(localStorage.getItem("accesos") || "[]");
+    setHistorial(saved);
+  }, []);
+
+  const guardarHistorial = (dni) => {
+    const nuevo = {
+      dni,
+      fecha: new Date().toLocaleString(),
+    };
+
+    const actualizado = [nuevo, ...historial].slice(0, 10);
+    setHistorial(actualizado);
+    localStorage.setItem("accesos", JSON.stringify(actualizado));
+  };
+
   const buscarDni = async (valor) => {
+    setError("");
+    setResultado(null);
+
     try {
-      setError("");
       const res = await fetch(`/api/buscar?dni=${valor}`);
       const data = await res.json();
 
       if (!data.found) {
-        setResultado("no-existe");
+        setError("Persona no encontrada");
+        guardarHistorial(valor);
         return;
       }
 
       setResultado(data.persona);
-
-      const nuevo = {
-        dni: valor,
-        fecha: new Date().toLocaleString(),
-      };
-
-      setHistorial((prev) => [nuevo, ...prev.slice(0, 4)]);
+      guardarHistorial(valor);
     } catch {
-      setError("Error de conexión con el servidor.");
+      setError("Error de conexión con el servidor");
     }
   };
 
-  // 🔥 SOLO busca cuando llega a 8 dígitos
-  useEffect(() => {
-    if (dni.length === 8) {
-      buscarDni(dni);
+  const handleChange = (e) => {
+    const value = e.target.value.replace(/\D/g, "");
+    setDni(value);
+
+    if (value.length === 8) {
+      buscarDni(value);
     }
-  }, [dni]);
+  };
 
   const limpiar = () => {
     setDni("");
@@ -44,159 +59,170 @@ export default function Home() {
   };
 
   return (
-    <div style={styles.bg}>
+    <div style={styles.fondo}>
       <div style={styles.card}>
-        <img src="/logo.png" width="90" />
+        <img src="/logo.png" style={styles.logo} />
 
-        <h1 style={styles.title}>Control Acceso CARC</h1>
+        <h1 style={styles.titulo}>Control Acceso CARC</h1>
         <p>Ingrese DNI para validar acceso</p>
 
-        <div style={styles.row}>
+        <div style={styles.buscador}>
           <input
             type="tel"
             inputMode="numeric"
             pattern="[0-9]*"
-            placeholder="DNI (8 dígitos)"
+            maxLength="8"
             value={dni}
-            onChange={(e) => setDni(e.target.value.replace(/\D/g, ""))}
+            onChange={handleChange}
+            placeholder="DNI (solo números)"
             style={styles.input}
           />
 
-          <button onClick={() => buscarDni(dni)} style={styles.btn}>
+          <button style={styles.btnBuscar} onClick={() => buscarDni(dni)}>
             Buscar
           </button>
         </div>
 
-        <button onClick={limpiar} style={styles.clear}>Limpiar</button>
+        <button style={styles.btnLimpiar} onClick={limpiar}>
+          Limpiar
+        </button>
 
         <div style={styles.tip}>
           Tip: al llegar a 8 dígitos, busca solo.
         </div>
 
-        {resultado === "no-existe" && (
-          <div style={styles.noExiste}>❗ No existe en el padrón</div>
+        {error && (
+          <div
+            style={{
+              ...styles.estado,
+              background:
+                error === "Persona no encontrada" ? "#ff9800" : "#ffd6d6",
+            }}
+          >
+            {error}
+          </div>
         )}
 
-        {resultado && resultado !== "no-existe" && (
-          <div style={{
-            ...styles.resultado,
-            background: resultado.cuota === 0 ? "#ffe08a" : "#d4f8d4"
-          }}>
-            <strong>{resultado.nombre}</strong><br />
-            Tipo ingreso: {resultado.tipoIngreso}<br />
-            Puerta: {resultado.puertaAcceso}<br />
-            {resultado.ubicacion && <>Ubicación: {resultado.ubicacion}<br /></}
-            {resultado.cuota === 0 && (
-              <strong style={{color:"#b00000"}}>Debe cuota</strong>
+        {resultado && (
+          <div
+            style={{
+              ...styles.estado,
+              background: resultado.cuota === 1 ? "#d4ffd4" : "#fff3b0",
+            }}
+          >
+            <strong>{resultado.nombre}</strong>
+            <br />
+            Tipo ingreso: {resultado.tipoIngreso}
+            <br />
+            Puerta: {resultado.puertaAcceso}
+            {resultado.ubicacion && (
+              <>
+                <br />
+                Ubicación: {resultado.ubicacion}
+              </>
             )}
+            <br />
+            {resultado.cuota === 1 ? "Cuota al día ✅" : "DEBE CUOTA ⚠️"}
           </div>
         )}
 
-        {error && <div style={styles.error}>{error}</div>}
+        <h3 style={{ marginTop: 20 }}>Últimos accesos (local)</h3>
 
-        <h3 style={{marginTop:20}}>Últimos accesos (local)</h3>
-
-        {historial.length === 0 && <p>Sin registros.</p>}
-
-        {historial.map((h, i) => (
-          <div key={i} style={styles.histItem}>
-            {h.dni} — {h.fecha}
-          </div>
-        ))}
-
-        <div style={styles.footer}>
-          Rosario Central
+        <div style={styles.historial}>
+          {historial.length === 0 && "Todavía no hay registros."}
+          {historial.map((h, i) => (
+            <div key={i} style={styles.itemHistorial}>
+              <span>{h.dni}</span>
+              <span>{h.fecha}</span>
+            </div>
+          ))}
         </div>
+
+        <div style={styles.footer}>Rosario Central 💙💛</div>
       </div>
     </div>
   );
 }
 
 const styles = {
-  bg: {
+  fondo: {
     minHeight: "100vh",
-    background: "#004aad",
+    background: "#0b4db3",
     display: "flex",
-    justifyContent: "center",
     alignItems: "center",
-    fontFamily: "Lexend, sans-serif"
+    justifyContent: "center",
   },
   card: {
-    background: "#fff",
+    background: "white",
     padding: 30,
     borderRadius: 20,
-    width: 360,
-    textAlign: "center"
+    width: "90%",
+    maxWidth: 420,
+    textAlign: "center",
   },
-  title: {
-    color: "#004aad",
-    marginBottom: 5
+  logo: {
+    width: 90,
+    marginBottom: 10,
   },
-  row: {
+  titulo: {
+    color: "#0b4db3",
+  },
+  buscador: {
     display: "flex",
     gap: 10,
-    marginTop: 10
+    marginTop: 15,
   },
   input: {
     flex: 1,
     padding: 12,
     fontSize: 18,
-    borderRadius: 12,
-    border: "1px solid #ccc"
+    borderRadius: 10,
+    border: "1px solid #ccc",
   },
-  btn: {
-    background: "#ffd400",
+  btnBuscar: {
+    background: "#ffd100",
     border: "none",
     padding: "12px 18px",
-    borderRadius: 12,
+    borderRadius: 10,
     fontWeight: "bold",
-    cursor: "pointer"
   },
-  clear: {
+  btnLimpiar: {
     marginTop: 10,
-    padding: 8,
+    padding: 10,
     borderRadius: 10,
     border: "none",
-    background: "#eee",
-    cursor: "pointer"
   },
   tip: {
-    marginTop: 12,
-    padding: 10,
+    marginTop: 10,
+    fontSize: 14,
     background: "#f3f3f3",
-    borderRadius: 10,
-    fontSize: 14
+    padding: 8,
+    borderRadius: 8,
   },
-  resultado: {
+  estado: {
     marginTop: 15,
-    padding: 12,
-    borderRadius: 12
-  },
-  noExiste: {
-    marginTop: 15,
-    background: "orange",
     padding: 12,
     borderRadius: 12,
-    fontWeight: "bold"
+    fontWeight: "bold",
   },
-  error: {
-    marginTop: 15,
-    background: "#ffb3b3",
-    padding: 12,
-    borderRadius: 12
+  historial: {
+    marginTop: 10,
+    maxHeight: 150,
+    overflowY: "auto",
   },
-  histItem: {
-    background: "#eee",
-    marginTop: 5,
+  itemHistorial: {
+    display: "flex",
+    justifyContent: "space-between",
+    background: "#ffe0c2",
     padding: 6,
-    borderRadius: 8,
-    fontSize: 13
+    borderRadius: 6,
+    marginBottom: 4,
   },
   footer: {
     marginTop: 20,
-    background: "#ffd400",
+    background: "#ffd100",
     padding: 10,
     borderRadius: 12,
-    fontWeight: "bold"
-  }
+    fontWeight: "bold",
+  },
 };
