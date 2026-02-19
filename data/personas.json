@@ -1,18 +1,10 @@
 [
   {
-    "dni": "123",
-    "nombre": "Juan Perez",
-    "tipo_ingreso": "Tribuna",
-    "puerta": "Puerta 3",
-    "ubicacion": "Popular Norte",
+    "dni": "25328387",
+    "nombre": "Martín Lagamma",
+    "tipoIngreso": "Empleado",
+    "puertaAcceso": "Puerta 1-2-3-4-5-10",
+    "ubicacion": "Total",
     "cuota": 1
-  },
-  {
-    "dni": "456",
-    "nombre": "Maria Gomez",
-    "tipo_ingreso": "Platea",
-    "puerta": "Puerta 1",
-    "ubicacion": "",
-    "cuota": 0
   }
 ]
