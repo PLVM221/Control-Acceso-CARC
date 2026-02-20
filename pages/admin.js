@@ -154,15 +154,15 @@ export default function Admin() {
     }
 
     try {
-      const res = await fetch("/api/admin/guardar", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          mode,
-          persons: parsed,
-          password,
-        }),
-      });
+     const res = await fetch("/api/admin/guardar", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    mode,
+    persons: cleaned,   // 👈 ESTE es el correcto
+    password
+  }),
+});
 
       const data = await res.json().catch(() => ({}));
 
