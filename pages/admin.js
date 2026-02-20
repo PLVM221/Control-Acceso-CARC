@@ -1,356 +1,484 @@
-import { useEffect, useMemo, useState } from "react";
+// pages/admin.js
+import { useEffect, useMemo, useRef, useState } from "react";
 
-function parseCSVSmart(text) {
-  // Normaliza saltos
-  const raw = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
-  if (!raw) return [];
+const LS_ADMIN = "carc_admin_ok";
+const LS_BASE = "carc_base_personas_v1";
+const LS_LOGS = "carc_admin_logs_v1";
 
-  // Detecta separador (coma o punto y coma)
-  const firstLine = raw.split("\n")[0] || "";
-  const commaCount = (firstLine.match(/,/g) || []).length;
-  const semiCount = (firstLine.match(/;/g) || []).length;
-  const sep = semiCount > commaCount ? ";" : ",";
+function nowISO() {
+  return new Date().toISOString();
+}
 
-  // Split de líneas (ignorando vacías)
-  const lines = raw
-    .split("\n")
+function todayKey() {
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function safeJSONParse(str) {
+  try {
+    return { ok: true, value: JSON.parse(str) };
+  } catch (e) {
+    return { ok: false, error: e?.message || "JSON inválido" };
+  }
+}
+
+function normalizePersona(p) {
+  // Campos esperados:
+  // dni (string), nombre (string), tipoIngreso (string), puertaAcceso (string), ubicacion (string opcional), cuota (0/1)
+  const dni = String(p?.dni ?? "").trim();
+  const nombre = String(p?.nombre ?? "").trim();
+  const tipoIngreso = String(p?.tipoIngreso ?? "").trim();
+  const puertaAcceso = String(p?.puertaAcceso ?? "").trim();
+  const ubicacion = String(p?.ubicacion ?? "").trim();
+  let cuotaRaw = p?.cuota;
+  // cuota puede venir como "0"/"1", 0/1, true/false
+  let cuota = 1;
+  if (cuotaRaw === 0 || cuotaRaw === "0" || cuotaRaw === false || cuotaRaw === "false") cuota = 0;
+  if (cuotaRaw === 1 || cuotaRaw === "1" || cuotaRaw === true || cuotaRaw === "true") cuota = 1;
+
+  return {
+    dni,
+    nombre,
+    tipoIngreso,
+    puertaAcceso,
+    ...(ubicacion ? { ubicacion } : {}),
+    cuota,
+  };
+}
+
+function isValidPersona(p) {
+  // DNI mínimo 1 dígito (hay DNIs menores a 8)
+  if (!p?.dni) return false;
+  if (!/^\d+$/.test(p.dni)) return false;
+  if (!p?.nombre) return false;
+  // los otros pueden ser vacíos si querés, pero normalmente se cargan
+  return true;
+}
+
+function mergeByDNI(existingList, incomingList) {
+  const map = new Map();
+  for (const p of existingList) map.set(p.dni, p);
+  for (const p of incomingList) map.set(p.dni, p);
+  return Array.from(map.values());
+}
+
+// CSV simple: separador coma o punto y coma.
+// Encabezado esperado:
+// dni,nombre,tipoIngreso,puertaAcceso,ubicacion,cuota
+function parseCSV(text) {
+  const lines = text
+    .split(/\r?\n/)
     .map((l) => l.trim())
     .filter(Boolean);
 
-  if (lines.length < 2) return [];
+  if (lines.length === 0) return { ok: false, error: "CSV vacío" };
 
-  // Parser simple con soporte básico de comillas
-  const splitLine = (line) => {
-    const out = [];
-    let cur = "";
-    let inQuotes = false;
+  const header = lines[0];
+  const sep = header.includes(";") ? ";" : ",";
+  const cols = header.split(sep).map((c) => c.trim());
 
-    for (let i = 0; i < line.length; i++) {
-      const ch = line[i];
+  const idx = (name) => cols.findIndex((c) => c.toLowerCase() === name.toLowerCase());
 
-      if (ch === '"') {
-        // Doble comilla escapada ""
-        if (inQuotes && line[i + 1] === '"') {
-          cur += '"';
-          i++;
-        } else {
-          inQuotes = !inQuotes;
-        }
-        continue;
-      }
+  const iDni = idx("dni");
+  const iNombre = idx("nombre");
+  const iTipo = idx("tipoIngreso");
+  const iPuerta = idx("puertaAcceso");
+  const iUbic = idx("ubicacion");
+  const iCuota = idx("cuota");
 
-      if (ch === sep && !inQuotes) {
-        out.push(cur.trim());
-        cur = "";
-        continue;
-      }
-
-      cur += ch;
-    }
-
-    out.push(cur.trim());
-    return out.map((v) => v.replace(/^"|"$/g, "").trim());
-  };
-
-  const headers = splitLine(lines[0]).map((h) => h.trim());
-
-  // Mapa flexible por si vienen headers distintos
-  const norm = (s) =>
-    (s || "")
-      .toLowerCase()
-      .replace(/\s+/g, "")
-      .replace(/_/g, "");
-
-  const idx = (nameVariants) => {
-    const variants = nameVariants.map(norm);
-    return headers.findIndex((h) => variants.includes(norm(h)));
-  };
-
-  const iDni = idx(["dni", "documento", "doc"]);
-  const iNombre = idx(["nombre", "apellidoYnombre", "apellidoynombre", "persona"]);
-  const iTipo = idx(["tipoingreso", "tipo", "ingreso"]);
-  const iPuerta = idx(["puertaacceso", "puerta", "acceso"]);
-  const iUbic = idx(["ubicacion", "ubicación", "ubic"]);
-  const iCuota = idx(["cuota", "cuotaaldia", "cuota_al_dia"]);
-
-  if (iDni === -1 || iNombre === -1) {
-    throw new Error(
-      'El CSV debe tener al menos las columnas "dni" y "nombre" en la primera fila.'
-    );
-  }
-
-  const rows = [];
-
-  for (let r = 1; r < lines.length; r++) {
-    const cols = splitLine(lines[r]);
-    if (!cols.length) continue;
-
-    const dni = (cols[iDni] || "").replace(/\D/g, ""); // solo números
-    const nombre = (cols[iNombre] || "").trim();
-
-    if (!dni || !nombre) continue;
-
-    const tipoIngreso = iTipo >= 0 ? (cols[iTipo] || "").trim() : "";
-    const puertaAcceso = iPuerta >= 0 ? (cols[iPuerta] || "").trim() : "";
-    const ubicacion = iUbic >= 0 ? (cols[iUbic] || "").trim() : "";
-    const cuotaRaw = iCuota >= 0 ? (cols[iCuota] || "").trim() : "";
-
-    // cuota: 1/0. Si viene vacío -> lo dejamos vacío para no inventar.
-    let cuota;
-    if (cuotaRaw === "") cuota = "";
-    else if (cuotaRaw === "1" || cuotaRaw.toLowerCase() === "si" || cuotaRaw.toLowerCase() === "sí") cuota = 1;
-    else if (cuotaRaw === "0" || cuotaRaw.toLowerCase() === "no") cuota = 0;
-    else {
-      // si mandan cualquier cosa, intentamos convertir a número
-      const n = Number(cuotaRaw);
-      cuota = Number.isFinite(n) ? (n ? 1 : 0) : "";
-    }
-
-    const obj = {
-      dni,
-      nombre,
-      tipoIngreso,
-      puertaAcceso,
-      ubicacion,
-      cuota,
+  if (iDni < 0 || iNombre < 0) {
+    return {
+      ok: false,
+      error:
+        "El CSV debe tener encabezados al menos: dni,nombre (y opcional: tipoIngreso,puertaAcceso,ubicacion,cuota).",
     };
-
-    // Si ubicacion está vacía, la borramos para que no “aparezca ese dato”
-    if (!obj.ubicacion) delete obj.ubicacion;
-    // Si cuota está vacía, la borramos (opcional)
-    if (obj.cuota === "") delete obj.cuota;
-    // Si tipoIngreso/puertaAcceso vacíos, los borramos también (opcional)
-    if (!obj.tipoIngreso) delete obj.tipoIngreso;
-    if (!obj.puertaAcceso) delete obj.puertaAcceso;
-
-    rows.push(obj);
   }
 
-  return rows;
+  const out = [];
+  for (let r = 1; r < lines.length; r++) {
+    const row = lines[r];
+    const parts = row.split(sep).map((x) => x.trim().replace(/^"(.*)"$/, "$1"));
+    const p = normalizePersona({
+      dni: parts[iDni] ?? "",
+      nombre: parts[iNombre] ?? "",
+      tipoIngreso: iTipo >= 0 ? parts[iTipo] : "",
+      puertaAcceso: iPuerta >= 0 ? parts[iPuerta] : "",
+      ubicacion: iUbic >= 0 ? parts[iUbic] : "",
+      cuota: iCuota >= 0 ? parts[iCuota] : 1,
+    });
+    out.push(p);
+  }
+
+  return { ok: true, value: out };
 }
 
-export default function Admin() {
-  const [modo, setModo] = useState("AGREGAR"); // o "NUEVO"
-  const [jsonText, setJsonText] = useState("");
+function downloadText(filename, text, mime = "text/plain;charset=utf-8") {
+  const blob = new Blob([text], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+export default function AdminPage() {
+  const [password, setPassword] = useState("");
+  const [logged, setLogged] = useState(false);
+
+  const [mode, setMode] = useState("AGREGAR"); // AGREGAR o NUEVO
+  const [text, setText] = useState(
+    `[\n  {\n    "dni":"25328387",\n    "nombre":"Martin Lagamma",\n    "tipoIngreso":"Empleado",\n    "puertaAcceso":"Puerta 1-2-3-4-5-10",\n    "ubicacion":"Total",\n    "cuota":1\n  }\n]\n`
+  );
+
+  const [base, setBase] = useState([]); // base actual local
   const [msg, setMsg] = useState({ type: "", text: "" });
-  const [logged, setLogged] = useState(true); // si ya tenés login hecho, lo dejamos así
 
-  const placeholder = useMemo(() => {
-    return `[
-  {
-    "dni":"25328387",
-    "nombre":"Martin Lagamma",
-    "tipoIngreso":"Empleado",
-    "puertaAcceso":"Puerta 1-2-3-4-5-10",
-    "ubicacion":"Total",
-    "cuota":1
-  }
-]`;
-  }, []);
+  const fileRef = useRef(null);
 
+  // cargar estado inicial
   useEffect(() => {
-    // si querés, podés traer lo que ya haya en data desde un endpoint (opcional)
+    const ok = localStorage.getItem(LS_ADMIN) === "1";
+    setLogged(ok);
+
+    const saved = localStorage.getItem(LS_BASE);
+    if (saved) {
+      const parsed = safeJSONParse(saved);
+      if (parsed.ok && Array.isArray(parsed.value)) setBase(parsed.value);
+    }
   }, []);
 
-  const setOK = (text) => setMsg({ type: "ok", text });
-  const setERR = (text) => setMsg({ type: "err", text });
+  const baseCount = base.length;
 
-  async function guardar() {
-    try {
-      setMsg({ type: "", text: "" });
-
-      const parsed = JSON.parse(jsonText);
-      if (!Array.isArray(parsed)) {
-        setERR("El JSON debe ser un ARRAY de objetos.");
-        return;
+  const parsedInput = useMemo(() => {
+    // intentar JSON primero
+    const parsed = safeJSONParse(text);
+    if (parsed.ok) {
+      if (!Array.isArray(parsed.value)) {
+        return { ok: false, error: "El JSON debe ser un ARRAY de personas: [ {..}, {..} ]" };
       }
-
-      // Validación mínima
-      for (const p of parsed) {
-        if (!p?.dni || !p?.nombre) {
-          setERR('Cada registro debe tener "dni" y "nombre".');
-          return;
-        }
-      }
-
-      // Llama a tu endpoint existente.
-      // Si tu proyecto ya guarda, dejalo igual.
-      const res = await fetch("/api/admin/guardar", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ modo, personas: parsed }),
-      });
-
-      const data = await res.json().catch(() => ({}));
-
-      if (!res.ok) {
-        setERR(data?.error || "No se pudo guardar.");
-        return;
-      }
-
-      setOK(data?.message || "Listado guardado OK.");
-    } catch (e) {
-      setERR("JSON inválido o error guardando: " + (e?.message || e));
+      const normalized = parsed.value.map(normalizePersona).filter(isValidPersona);
+      return { ok: true, value: normalized };
     }
+    return { ok: false, error: parsed.error };
+  }, [text]);
+
+  function addAdminLog(entry) {
+    const raw = localStorage.getItem(LS_LOGS);
+    const parsed = raw ? safeJSONParse(raw) : { ok: true, value: {} };
+    const logs = parsed.ok && parsed.value && typeof parsed.value === "object" ? parsed.value : {};
+    const key = todayKey();
+    const arr = Array.isArray(logs[key]) ? logs[key] : [];
+    arr.unshift({ at: nowISO(), ...entry });
+    logs[key] = arr;
+    localStorage.setItem(LS_LOGS, JSON.stringify(logs, null, 2));
   }
 
-  async function onCSVChange(ev) {
-    const file = ev.target.files?.[0];
+  function login() {
+    // LOGIN SIMPLE LOCAL: guarda bandera en localStorage
+    // Si querés, después lo conectamos a ADMIN_PASSWORD en server.
+    if (!password || password.trim().length < 3) {
+      setMsg({ type: "err", text: "Ingresá una contraseña válida." });
+      return;
+    }
+    localStorage.setItem(LS_ADMIN, "1");
+    setLogged(true);
+    setPassword("");
+    setMsg({ type: "ok", text: "Logueado ✅" });
+    addAdminLog({ action: "LOGIN_OK" });
+  }
+
+  function logout() {
+    localStorage.removeItem(LS_ADMIN);
+    setLogged(false);
+    setMsg({ type: "info", text: "Saliste del admin." });
+    addAdminLog({ action: "LOGOUT" });
+  }
+
+  function clearMsgSoon() {
+    setTimeout(() => setMsg({ type: "", text: "" }), 2500);
+  }
+
+  function handleSave() {
+    if (!parsedInput.ok) {
+      setMsg({ type: "err", text: `No se puede guardar: ${parsedInput.error}` });
+      clearMsgSoon();
+      return;
+    }
+
+    const incoming = parsedInput.value;
+
+    let next = [];
+    if (mode === "NUEVO") {
+      next = incoming;
+    } else {
+      next = mergeByDNI(base, incoming);
+    }
+
+    // guardar base
+    localStorage.setItem(LS_BASE, JSON.stringify(next, null, 2));
+    setBase(next);
+
+    addAdminLog({
+      action: mode === "NUEVO" ? "BASE_REPLACED" : "BASE_MERGED",
+      incoming: incoming.length,
+      total: next.length,
+    });
+
+    setMsg({
+      type: "ok",
+      text:
+        mode === "NUEVO"
+          ? `Base reemplazada ✅ (${incoming.length} registros)`
+          : `Base actualizada ✅ (+${incoming.length} / total ${next.length})`,
+    });
+    clearMsgSoon();
+  }
+
+  function handleFilePick() {
+    fileRef.current?.click();
+  }
+
+  async function handleFileChange(e) {
+    const file = e.target.files?.[0];
     if (!file) return;
 
-    try {
-      setMsg({ type: "", text: "" });
+    const name = file.name.toLowerCase();
+    const txt = await file.text();
 
-      const text = await file.text();
-      const rows = parseCSVSmart(text);
+    if (name.endsWith(".json")) {
+      setText(txt);
+      setMsg({ type: "info", text: "JSON cargado en el editor." });
+      clearMsgSoon();
+      addAdminLog({ action: "FILE_LOADED_JSON", filename: file.name, bytes: file.size });
+      return;
+    }
 
-      if (!rows.length) {
-        setERR("El CSV no trajo filas válidas. Revisá headers y contenido.");
+    if (name.endsWith(".csv")) {
+      const parsed = parseCSV(txt);
+      if (!parsed.ok) {
+        setMsg({ type: "err", text: parsed.error });
+        clearMsgSoon();
         return;
       }
-
-      setJsonText(JSON.stringify(rows, null, 2));
-      setOK(`CSV cargado: ${rows.length} registros. Ahora podés “Guardar listado”.`);
-    } catch (e) {
-      setERR(e?.message || "No pude leer/parsear el CSV.");
-    } finally {
-      // permite volver a cargar el mismo archivo si lo editás
-      ev.target.value = "";
+      // lo pasamos a JSON en el textarea para que puedas ver/editar
+      const json = JSON.stringify(parsed.value, null, 2);
+      setText(json);
+      setMsg({ type: "ok", text: `CSV convertido a JSON ✅ (${parsed.value.length} filas)` });
+      clearMsgSoon();
+      addAdminLog({ action: "FILE_LOADED_CSV", filename: file.name, rows: parsed.value.length, bytes: file.size });
+      return;
     }
+
+    setMsg({ type: "err", text: "Subí un .csv o .json" });
+    clearMsgSoon();
   }
 
+  function downloadBaseJSON() {
+    const raw = localStorage.getItem(LS_BASE) || "[]";
+    downloadText("personas.json", raw, "application/json;charset=utf-8");
+    addAdminLog({ action: "DOWNLOAD_BASE_JSON" });
+  }
+
+  function downloadLogsJSON() {
+    const raw = localStorage.getItem(LS_LOGS) || "{}";
+    downloadText("admin-logs.json", raw, "application/json;charset=utf-8");
+    addAdminLog({ action: "DOWNLOAD_LOGS" });
+  }
+
+  // estilos
+  const bg = {
+    minHeight: "100vh",
+    padding: 24,
+    background: "linear-gradient(180deg, #0b4db3 0%, #083a86 100%)",
+    fontFamily: "Lexend, system-ui, -apple-system, Segoe UI, Roboto, Arial",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+  };
+
+  const card = {
+    width: "min(980px, 96vw)",
+    background: "#fff",
+    borderRadius: 18,
+    padding: 22,
+    boxShadow: "0 14px 40px rgba(0,0,0,0.22)",
+  };
+
+  const h1 = { margin: 0, fontSize: 34, fontWeight: 900, letterSpacing: "-0.02em" };
+  const row = { display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" };
+  const label = { fontWeight: 800, color: "#0b3ea8" };
+
+  const select = {
+    padding: "10px 12px",
+    borderRadius: 12,
+    border: "1px solid #c9d6ea",
+    background: "#fff",
+    fontWeight: 800,
+  };
+
+  const btn = (variant) => ({
+    padding: "10px 14px",
+    borderRadius: 12,
+    border: "none",
+    cursor: "pointer",
+    fontWeight: 900,
+    ...(variant === "primary"
+      ? { background: "#0b3ea8", color: "#fff" }
+      : variant === "warn"
+      ? { background: "#ffd100", color: "#111" }
+      : { background: "#eef2f7", color: "#111" }),
+  });
+
+  const textarea = {
+    width: "100%",
+    minHeight: 320,
+    resize: "vertical",
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace",
+    fontSize: 14,
+    padding: 14,
+    borderRadius: 14,
+    border: "1px solid #c9d6ea",
+    outline: "none",
+  };
+
+  const pill = (t) => ({
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 8,
+    padding: "10px 12px",
+    borderRadius: 14,
+    background:
+      t === "ok" ? "#e8fff1" : t === "err" ? "#ffe9ea" : t === "info" ? "#eef6ff" : "#f4f6f8",
+    color: t === "err" ? "#7a0c12" : "#111",
+    border: "1px solid rgba(0,0,0,0.06)",
+    fontWeight: 800,
+  });
+
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        background: "#064aa8",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: 20,
-      }}
-    >
-      <div
-        style={{
-          width: "min(980px, 96vw)",
-          background: "#fff",
-          borderRadius: 22,
-          padding: 22,
-          boxShadow: "0 16px 40px rgba(0,0,0,.25)",
-        }}
-      >
-        <h1 style={{ margin: 0, fontSize: 34 }}>Admin — Control Acceso CARC</h1>
+    <div style={bg}>
+      <div style={card}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+          <h1 style={h1}>Admin — Control Acceso CARC</h1>
 
-        <div style={{ marginTop: 14, display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
-          <div style={{ fontWeight: 700 }}>Modo de carga:</div>
-
-          <select
-            value={modo}
-            onChange={(e) => setModo(e.target.value)}
-            style={{
-              padding: "10px 12px",
-              borderRadius: 10,
-              border: "1px solid #c9d6ea",
-              fontWeight: 700,
-            }}
-          >
-            <option value="AGREGAR">AGREGAR (no borra, actualiza por DNI)</option>
-            <option value="NUEVO">NUEVO (borra todo y carga de cero)</option>
-          </select>
-
-          <button
-            onClick={guardar}
-            style={{
-              padding: "10px 14px",
-              borderRadius: 10,
-              border: "none",
-              background: "#0b3ea8",
-              color: "#fff",
-              fontWeight: 800,
-              cursor: "pointer",
-            }}
-          >
-            Guardar listado
-          </button>
-
-          <label
-            style={{
-              padding: "10px 14px",
-              borderRadius: 10,
-              border: "1px solid #c9d6ea",
-              background: "#f7fbff",
-              fontWeight: 800,
-              cursor: "pointer",
-            }}
-            title="Subir CSV y convertirlo a JSON"
-          >
-            Seleccionar CSV
-            <input
-              type="file"
-              accept=".csv,text/csv"
-              onChange={onCSVChange}
-              style={{ display: "none" }}
-            />
-          </label>
-        </div>
-
-        <div style={{ marginTop: 10, color: "#333" }}>
-          Pegá JSON o subí un CSV. Headers recomendados:
-          <b> dni,nombre,tipoIngreso,puertaAcceso,ubicacion,cuota</b>
-        </div>
-
-        <textarea
-          value={jsonText}
-          onChange={(e) => setJsonText(e.target.value)}
-          placeholder={placeholder}
-          style={{
-            marginTop: 12,
-            width: "100%",
-            minHeight: 380,
-            borderRadius: 14,
-            border: "1px solid #c9d6ea",
-            padding: 14,
-            fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
-            fontSize: 14,
-          }}
-        />
-
-        {msg.text ? (
-          <div
-            style={{
-              marginTop: 12,
-              padding: 12,
-              borderRadius: 12,
-              border: "1px solid",
-              borderColor: msg.type === "ok" ? "#b7ebc6" : "#f5b7b7",
-              background: msg.type === "ok" ? "#eafff1" : "#ffecec",
-              fontWeight: 800,
-            }}
-          >
-            {msg.text}
+          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <div style={{ fontWeight: 900, color: "#0b3ea8" }}>
+              Base local: <span style={{ color: "#111" }}>{baseCount} registros</span>
+            </div>
+            {logged ? (
+              <button onClick={logout} style={btn()}>
+                Salir
+              </button>
+            ) : null}
           </div>
-        ) : null}
-
-        <div style={{ marginTop: 12, display: "flex", gap: 10, alignItems: "center" }}>
-          <div
-            style={{
-              width: 22,
-              height: 22,
-              borderRadius: 6,
-              background: logged ? "#12b76a" : "#d92d20",
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-              color: "#fff",
-              fontWeight: 900,
-            }}
-          >
-            {logged ? "✓" : "!"}
-          </div>
-          <div style={{ fontWeight: 800 }}>{logged ? "Logueado" : "No logueado"}</div>
         </div>
 
-        <div style={{ marginTop: 8, opacity: 0.7, fontWeight: 700 }}>Ruta: /admin</div>
+        <div style={{ height: 14 }} />
+
+        {!logged ? (
+          <div style={{ display: "grid", gap: 12 }}>
+            <div style={{ fontWeight: 900, color: "#0b3ea8" }}>Ingresá contraseña admin</div>
+
+            {/* ✅ FORM para que ENTER funcione */}
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                login();
+              }}
+              style={{ display: "flex", gap: 12, alignItems: "center" }}
+            >
+              <input
+                type="password"
+                placeholder="Contraseña admin"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                style={{
+                  padding: "12px",
+                  borderRadius: "12px",
+                  border: "1px solid #c9d6ea",
+                  fontSize: "16px",
+                  flex: 1,
+                }}
+              />
+              <button type="submit" style={btn("primary")}>
+                Entrar
+              </button>
+            </form>
+
+            {msg.text ? <div style={pill(msg.type)}>{msg.text}</div> : null}
+          </div>
+        ) : (
+          <>
+            {/* Toolbar */}
+            <div style={row}>
+              <div style={label}>Modo de carga:</div>
+              <select value={mode} onChange={(e) => setMode(e.target.value)} style={select}>
+                <option value="AGREGAR">AGREGAR (no borra, actualiza por DNI)</option>
+                <option value="NUEVO">NUEVO (borra y reemplaza todo)</option>
+              </select>
+
+              <button onClick={handleSave} style={btn("primary")}>
+                Guardar listado
+              </button>
+
+              <button onClick={handleFilePick} style={btn("warn")}>
+                Subir CSV / JSON
+              </button>
+
+              <button onClick={downloadBaseJSON} style={btn()}>
+                Descargar base (JSON)
+              </button>
+
+              <button onClick={downloadLogsJSON} style={btn()}>
+                Descargar logs
+              </button>
+
+              <input
+                ref={fileRef}
+                type="file"
+                accept=".csv,.json"
+                style={{ display: "none" }}
+                onChange={handleFileChange}
+              />
+            </div>
+
+            <div style={{ height: 10 }} />
+
+            <div style={{ color: "#1f2a37", fontWeight: 700 }}>
+              Pegá tu listado en formato <b>JSON</b> o subí un <b>CSV/JSON</b>.
+              <div style={{ marginTop: 6, fontSize: 13, opacity: 0.9 }}>
+                CSV esperado (encabezados): <b>dni,nombre,tipoIngreso,puertaAcceso,ubicacion,cuota</b> (cuota: 1 al día / 0 debe)
+              </div>
+            </div>
+
+            <div style={{ height: 10 }} />
+
+            <textarea value={text} onChange={(e) => setText(e.target.value)} style={textarea} />
+
+            <div style={{ height: 10 }} />
+
+            <div style={row}>
+              <div style={pill("ok")}>✅ Logueado</div>
+
+              {parsedInput.ok ? (
+                <div style={pill("info")}>Listo para guardar: {parsedInput.value.length} registros válidos</div>
+              ) : (
+                <div style={pill("err")}>JSON inválido: {parsedInput.error}</div>
+              )}
+
+              {msg.text ? <div style={pill(msg.type)}>{msg.text}</div> : null}
+            </div>
+
+            <div style={{ marginTop: 10, fontSize: 12, opacity: 0.8 }}>
+              Ruta: <b>/admin</b>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
