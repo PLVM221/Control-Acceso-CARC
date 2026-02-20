@@ -1,17 +1,29 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 function parseCSV(text) {
-  // Parser simple (soporta comillas)
-  const rows = [];
-  let i = 0;
-  let field = "";
-  let row = [];
-  let inQuotes = false;
+  const firstLine = text.split("\n")[0];
 
-  const pushField = () => {
-    row.push(field);
-    field = "";
-  };
+  // Detectar separador automáticamente
+  const delimiter = firstLine.includes(";") ? ";" : ",";
+
+  const rows = text
+    .split(/\r?\n/)
+    .filter((r) => r.trim() !== "")
+    .map((line) => line.split(delimiter).map((c) => c.trim()));
+
+  if (!rows.length) return { headers: [], data: [] };
+
+  const headers = rows[0];
+  const data = rows.slice(1).map((r) => {
+    const obj = {};
+    headers.forEach((h, i) => {
+      obj[h] = r[i] ?? "";
+    });
+    return obj;
+  });
+
+  return { headers, data };
+}
   const pushRow = () => {
     // evitar filas vacías
     if (row.some((c) => String(c ?? "").trim() !== "")) rows.push(row);
