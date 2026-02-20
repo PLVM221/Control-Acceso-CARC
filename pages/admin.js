@@ -1,110 +1,119 @@
-// pages/admin.js
 import { useEffect, useMemo, useRef, useState } from "react";
 
-const LS_BASE = "carc_base_personas_v1";
-const LS_ADMIN_OK = "carc_admin_ok_v1";
+function parseCSV(text) {
+  // Parser simple (soporta comillas)
+  const rows = [];
+  let i = 0;
+  let field = "";
+  let row = [];
+  let inQuotes = false;
 
-function safeJSONParse(str) {
-  try {
-    return { ok: true, value: JSON.parse(str) };
-  } catch (e) {
-    return { ok: false, error: e?.message || "JSON inválido" };
+  const pushField = () => {
+    row.push(field);
+    field = "";
+  };
+  const pushRow = () => {
+    // evitar filas vacías
+    if (row.some((c) => String(c ?? "").trim() !== "")) rows.push(row);
+    row = [];
+  };
+
+  while (i < text.length) {
+    const ch = text[i];
+
+    if (inQuotes) {
+      if (ch === '"') {
+        const next = text[i + 1];
+        if (next === '"') {
+          field += '"';
+          i += 2;
+          continue;
+        } else {
+          inQuotes = false;
+          i++;
+          continue;
+        }
+      } else {
+        field += ch;
+        i++;
+        continue;
+      }
+    } else {
+      if (ch === '"') {
+        inQuotes = true;
+        i++;
+        continue;
+      }
+      if (ch === ",") {
+        pushField();
+        i++;
+        continue;
+      }
+      if (ch === "\n") {
+        pushField();
+        pushRow();
+        i++;
+        continue;
+      }
+      if (ch === "\r") {
+        // ignore CR
+        i++;
+        continue;
+      }
+      field += ch;
+      i++;
+    }
   }
+
+  // último campo/fila
+  pushField();
+  pushRow();
+
+  if (!rows.length) return { headers: [], data: [] };
+
+  const headers = rows[0].map((h) => String(h || "").trim());
+  const data = rows.slice(1).map((r) => {
+    const obj = {};
+    headers.forEach((h, idx) => (obj[h] = r[idx] ?? ""));
+    return obj;
+  });
+
+  return { headers, data };
 }
 
-function normalizePersona(p) {
-  const dni = String(p?.dni ?? "").trim();
-  const nombre = String(p?.nombre ?? "").trim();
-  const tipoIngreso = String(p?.tipoIngreso ?? p?.sector ?? "").trim();
-  const puertaAcceso = String(p?.puertaAcceso ?? "").trim();
-  const ubicacion = String(p?.ubicacion ?? "").trim();
+function normalizeFromCSV(obj) {
+  // Acepta encabezados: dni,nombre,tipoIngreso,puertaAcceso,ubicacion,cuota
+  // También tolera: tipo_ingreso, puerta_acceso
+  const dni = String(obj.dni ?? "").trim();
+  if (!dni) return null;
 
-  let cuotaRaw = p?.cuota;
+  const nombre = String(obj.nombre ?? "").trim();
+
+  const tipoIngreso = String(obj.tipoIngreso ?? obj.tipo_ingreso ?? "").trim();
+  const puertaAcceso = String(obj.puertaAcceso ?? obj.puerta_acceso ?? "").trim();
+  const ubicacion = String(obj.ubicacion ?? "").trim();
+  const cuotaRaw = String(obj.cuota ?? "").trim();
+
   let cuota = 1;
-  if (cuotaRaw === 0 || cuotaRaw === "0" || cuotaRaw === false || cuotaRaw === "false") cuota = 0;
-  if (cuotaRaw === 1 || cuotaRaw === "1" || cuotaRaw === true || cuotaRaw === "true") cuota = 1;
+  if (cuotaRaw === "0") cuota = 0;
+  if (cuotaRaw === "1") cuota = 1;
 
   return {
     dni,
     nombre,
     tipoIngreso,
     puertaAcceso,
-    ...(ubicacion ? { ubicacion } : {}),
+    ubicacion,
     cuota,
   };
 }
 
-function isValidPersona(p) {
-  if (!p?.dni) return false;
-  if (!/^\d+$/.test(p.dni)) return false;
-  if (!p?.nombre) return false;
-  return true;
-}
-
-function mergeByDni(existing, incoming) {
-  const map = new Map();
-  for (const p of existing) map.set(String(p.dni), p);
-  for (const p of incoming) map.set(String(p.dni), p); // pisa por DNI
-  return Array.from(map.values());
-}
-
-function parseCSV(text) {
-  // CSV simple con separador coma o punto y coma
-  // Headers esperados:
-  // dni,nombre,tipoIngreso,puertaAcceso,ubicacion,cuota
-  // cuota: 1 o 0 (opcional, default 1)
-  const lines = text
-    .replace(/\r/g, "")
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean);
-
-  if (lines.length < 2) return { ok: false, error: "CSV vacío o sin filas." };
-
-  const sep = lines[0].includes(";") ? ";" : ",";
-  const headers = lines[0].split(sep).map((h) => h.trim());
-
-  const idx = (name) => headers.findIndex((h) => h.toLowerCase() === name.toLowerCase());
-
-  const iDni = idx("dni");
-  const iNombre = idx("nombre");
-  const iTipo = idx("tipoIngreso");
-  const iPuerta = idx("puertaAcceso");
-  const iUbic = idx("ubicacion");
-  const iCuota = idx("cuota");
-
-  if (iDni === -1 || iNombre === -1) {
-    return {
-      ok: false,
-      error:
-        "Faltan columnas obligatorias en el CSV. Mínimo: dni,nombre (y opcionales: tipoIngreso,puertaAcceso,ubicacion,cuota).",
-    };
-  }
-
-  const out = [];
-  for (let r = 1; r < lines.length; r++) {
-    const cols = lines[r].split(sep).map((c) => c.trim().replace(/^"|"$/g, ""));
-    const row = {
-      dni: cols[iDni] ?? "",
-      nombre: cols[iNombre] ?? "",
-      tipoIngreso: iTipo >= 0 ? cols[iTipo] ?? "" : "",
-      puertaAcceso: iPuerta >= 0 ? cols[iPuerta] ?? "" : "",
-      ubicacion: iUbic >= 0 ? cols[iUbic] ?? "" : "",
-      cuota: iCuota >= 0 ? cols[iCuota] ?? "1" : "1",
-    };
-    const p = normalizePersona(row);
-    if (isValidPersona(p)) out.push(p);
-  }
-
-  if (!out.length) return { ok: false, error: "No se pudo leer ninguna fila válida (dni numérico y nombre requerido)." };
-  return { ok: true, value: out };
-}
-
 export default function Admin() {
-  const [authed, setAuthed] = useState(false);
   const [password, setPassword] = useState("");
-  const [mode, setMode] = useState("AGREGAR"); // o NUEVO
-  const [text, setText] = useState(
+  const [authed, setAuthed] = useState(false);
+
+  const [modo, setModo] = useState("AGREGAR"); // NUEVO | AGREGAR
+  const [jsonText, setJsonText] = useState(
     `[
   {
     "dni":"25328387",
@@ -117,259 +126,312 @@ export default function Admin() {
 ]`
   );
 
-  const [status, setStatus] = useState({ type: "", text: "" });
+  const [csvInfo, setCsvInfo] = useState(null); // {headers, data, normalized}
+  const [msg, setMsg] = useState({ type: "", text: "" });
   const fileRef = useRef(null);
-  const passRef = useRef(null);
 
   useEffect(() => {
-    const ok = localStorage.getItem(LS_ADMIN_OK) === "1";
-    setAuthed(ok);
-    setTimeout(() => {
-      if (!ok && passRef.current) passRef.current.focus();
-    }, 0);
+    const saved = sessionStorage.getItem("admin_ok");
+    if (saved === "1") setAuthed(true);
   }, []);
 
-  const styles = useMemo(
-    () => ({
-      page: {
-        minHeight: "100vh",
-        padding: 24,
-        background: "linear-gradient(180deg, #0b4db3 0%, #083a86 100%)",
-        fontFamily: "Lexend, system-ui, -apple-system, Segoe UI, Roboto, Arial",
-        display: "flex",
-        justifyContent: "center",
-      },
-      card: {
-        width: "min(980px, 96vw)",
-        background: "#fff",
-        borderRadius: 22,
-        padding: 22,
-        boxShadow: "0 16px 46px rgba(0,0,0,0.25)",
-      },
-      h1: { margin: 0, fontSize: 36, fontWeight: 1000, letterSpacing: "-0.02em" },
-      row: { display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", marginTop: 12 },
-      label: { fontWeight: 900 },
-      select: { padding: "10px 12px", borderRadius: 12, border: "1px solid #c9d6ea", fontWeight: 800 },
-      btn: (variant) => ({
-        padding: "10px 14px",
-        borderRadius: 12,
-        border: "none",
-        cursor: "pointer",
-        fontWeight: 900,
-        background: variant === "primary" ? "#0b3ea8" : "#eef2f7",
-        color: variant === "primary" ? "#fff" : "#111",
-      }),
-      textarea: {
-        width: "100%",
-        minHeight: 340,
-        borderRadius: 16,
-        border: "1px solid #c9d6ea",
-        padding: 14,
-        fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
-        fontSize: 14,
-        lineHeight: 1.4,
-        marginTop: 10,
-      },
-      status: (type) => ({
-        marginTop: 12,
-        padding: 12,
-        borderRadius: 12,
-        border: "1px solid rgba(0,0,0,0.06)",
-        fontWeight: 900,
-        background:
-          type === "ok" ? "#e8fff1" : type === "warn" ? "#fff4cc" : type === "err" ? "#ffe0e0" : "#f4f6f8",
-        color: type === "ok" ? "#0b4a22" : type === "warn" ? "#6a4b00" : type === "err" ? "#7a0b0b" : "#111",
-      }),
-      logged: {
-        marginTop: 14,
-        padding: 12,
-        borderRadius: 12,
-        background: "#f2f2f2",
-        fontWeight: 900,
-        display: "flex",
-        gap: 10,
-        alignItems: "center",
-      },
-      hint: { marginTop: 10, fontWeight: 800, opacity: 0.85 },
-      route: { marginTop: 10, opacity: 0.7, fontWeight: 800 },
-      passBox: { marginTop: 14, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" },
-      pass: { padding: "12px 14px", borderRadius: 12, border: "1px solid #c9d6ea", fontWeight: 900, minWidth: 240 },
-      file: { display: "none" },
-    }),
-    []
-  );
-
-  function login() {
-    // Por ahora password fija local (después con env var y supabase)
-    const ok = password === "admin123";
-    if (!ok) {
-      setStatus({ type: "err", text: "Contraseña incorrecta." });
-      return;
+  const listadoFinal = useMemo(() => {
+    if (csvInfo?.normalized?.length) return csvInfo.normalized;
+    // fallback JSON
+    try {
+      const parsed = JSON.parse(jsonText);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
     }
-    localStorage.setItem(LS_ADMIN_OK, "1");
+  }, [csvInfo, jsonText]);
+
+  const doLogin = () => {
+    if (!password.trim()) return;
+    // validación real la hace el backend al guardar; acá solo habilitamos UI
+    sessionStorage.setItem("admin_ok", "1");
+    sessionStorage.setItem("admin_pass", password);
     setAuthed(true);
-    setStatus({ type: "ok", text: "Logueado." });
-  }
+    setMsg({ type: "ok", text: "✅ Logueado" });
+  };
 
-  function logout() {
-    localStorage.removeItem(LS_ADMIN_OK);
-    setAuthed(false);
-    setPassword("");
-    setStatus({ type: "", text: "" });
-    setTimeout(() => {
-      if (passRef.current) passRef.current.focus();
-    }, 0);
-  }
-
-  function saveList() {
-    const parsed = safeJSONParse(text);
-    if (!parsed.ok || !Array.isArray(parsed.value)) {
-      setStatus({ type: "err", text: "JSON inválido. Pegá un array [ { ... }, ... ]." });
-      return;
-    }
-
-    const incoming = parsed.value.map(normalizePersona).filter(isValidPersona);
-    if (!incoming.length) {
-      setStatus({ type: "err", text: "No hay filas válidas. Requiere dni numérico y nombre." });
-      return;
-    }
-
-    const existingRaw = localStorage.getItem(LS_BASE);
-    const existingParsed = existingRaw ? safeJSONParse(existingRaw) : { ok: true, value: [] };
-    const existing = existingParsed.ok && Array.isArray(existingParsed.value)
-      ? existingParsed.value.map(normalizePersona).filter(isValidPersona)
-      : [];
-
-    const finalArr = mode === "NUEVO" ? incoming : mergeByDni(existing, incoming);
-
-    localStorage.setItem(LS_BASE, JSON.stringify(finalArr, null, 2));
-    setStatus({
-      type: "ok",
-      text: `Guardado OK. Registros en base: ${finalArr.length}. Modo: ${mode}.`,
-    });
-  }
-
-  async function onPickFile(e) {
-    const file = e.target.files?.[0];
+  const onPickCSV = async (file) => {
     if (!file) return;
+    const text = await file.text();
+    const { headers, data } = parseCSV(text);
 
-    const ext = (file.name.split(".").pop() || "").toLowerCase();
-    const textFile = await file.text();
+    // Normalizar filas
+    const normalized = data.map(normalizeFromCSV).filter(Boolean);
 
-    if (ext === "json") {
-      // si es JSON array, lo pegamos directo en el textarea (formateado)
-      const parsed = safeJSONParse(textFile);
-      if (!parsed.ok || !Array.isArray(parsed.value)) {
-        setStatus({ type: "err", text: "El JSON del archivo no es un array válido." });
-        return;
-      }
-      setText(JSON.stringify(parsed.value, null, 2));
-      setStatus({ type: "ok", text: "Archivo JSON cargado. Ahora tocá “Guardar listado”." });
+    setCsvInfo({ fileName: file.name, headers, dataCount: data.length, normalized });
+
+    // También volcamos a textarea para que veas lo que se va a guardar
+    setJsonText(JSON.stringify(normalized, null, 2));
+    setMsg({
+      type: "ok",
+      text: `✅ CSV leído: ${file.name} — Filas: ${data.length} — Válidas (con DNI): ${normalized.length}`,
+    });
+  };
+
+  const guardar = async () => {
+    setMsg({ type: "", text: "" });
+
+    const pass = sessionStorage.getItem("admin_pass") || password;
+    if (!pass) {
+      setMsg({ type: "err", text: "❌ Falta contraseña de admin" });
       return;
     }
 
-    if (ext === "csv") {
-      const parsed = parseCSV(textFile);
-      if (!parsed.ok) {
-        setStatus({ type: "err", text: parsed.error });
-        return;
-      }
-      setText(JSON.stringify(parsed.value, null, 2));
-      setStatus({ type: "ok", text: "CSV importado y convertido a JSON. Ahora tocá “Guardar listado”." });
+    // Validación mínima
+    if (!listadoFinal.length) {
+      setMsg({ type: "err", text: "❌ No hay datos para guardar (CSV vacío o JSON inválido)" });
       return;
     }
 
-    setStatus({ type: "warn", text: "Formato no soportado. Subí .json o .csv" });
-  }
+    const resp = await fetch("/api/admin/guardar", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-admin-password": pass },
+      body: JSON.stringify({
+        password: pass,
+        modo,
+        listado: listadoFinal,
+      }),
+    });
+
+    const data = await resp.json().catch(() => null);
+
+    if (!resp.ok) {
+      setMsg({ type: "err", text: `❌ Error: ${data?.error || "No se pudo guardar"}` });
+      return;
+    }
+
+    setMsg({
+      type: "ok",
+      text: `✅ Guardado OK. Modo: ${data.modo}. Recibidas: ${data.recibidas}. Guardadas: ${data.guardadas}.`,
+    });
+  };
+
+  const boxStyle = {
+    minHeight: "100vh",
+    background: "linear-gradient(135deg,#0B4FB3,#0A3E8C)",
+    padding: 24,
+    display: "flex",
+    justifyContent: "center",
+    alignItems: "flex-start",
+    fontFamily: "Lexend, system-ui, -apple-system, Segoe UI, Roboto, Arial",
+  };
+
+  const cardStyle = {
+    width: "min(980px, 95vw)",
+    background: "#fff",
+    borderRadius: 18,
+    padding: 22,
+    boxShadow: "0 18px 55px rgba(0,0,0,.25)",
+  };
 
   if (!authed) {
     return (
-      <div style={styles.page}>
-        <div style={styles.card}>
-          <h1 style={styles.h1}>Admin — Control Acceso CARC</h1>
+      <div style={boxStyle}>
+        <div style={cardStyle}>
+          <h1 style={{ margin: 0, fontSize: 34, color: "#0B4FB3" }}>Admin — Control Acceso CARC</h1>
+          <p style={{ marginTop: 10, color: "#333" }}>
+            Ingresá la contraseña para administrar la base.
+          </p>
 
-          <div style={styles.hint}>Ingresá la contraseña para entrar.</div>
-
-          {/* ✅ ENTER PARA INGRESAR */}
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              login();
-            }}
-            style={styles.passBox}
-          >
+          <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 10 }}>
             <input
-              ref={passRef}
               type="password"
+              placeholder="Contraseña admin"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder="Contraseña"
-              style={styles.pass}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") doLogin();
+              }}
+              style={{
+                flex: 1,
+                padding: "12px 14px",
+                borderRadius: 12,
+                border: "1px solid #cbd5e1",
+                fontSize: 16,
+              }}
             />
-            <button type="submit" style={styles.btn("primary")}>
+            <button
+              onClick={doLogin}
+              style={{
+                padding: "12px 16px",
+                borderRadius: 12,
+                border: "none",
+                background: "#0B4FB3",
+                color: "white",
+                fontWeight: 800,
+                cursor: "pointer",
+              }}
+            >
               Entrar
             </button>
-          </form>
+          </div>
 
-          {status.text ? <div style={styles.status(status.type)}>{status.text}</div> : null}
+          {msg.text ? (
+            <div
+              style={{
+                marginTop: 14,
+                padding: 12,
+                borderRadius: 12,
+                background: msg.type === "ok" ? "#DCFCE7" : "#FEE2E2",
+                border: "1px solid " + (msg.type === "ok" ? "#86EFAC" : "#FCA5A5"),
+              }}
+            >
+              {msg.text}
+            </div>
+          ) : null}
 
-          <div style={styles.route}>Ruta: /admin</div>
+          <div style={{ marginTop: 14, fontSize: 13, color: "#666" }}>
+            Ruta: <b>/admin</b> — Tip: podés apretar <b>Enter</b> para ingresar.
+          </div>
         </div>
       </div>
     );
   }
 
   return (
-    <div style={styles.page}>
-      <div style={styles.card}>
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-          <h1 style={styles.h1}>Admin — Control Acceso CARC</h1>
-          <button onClick={logout} style={styles.btn()}>
-            Salir
-          </button>
-        </div>
+    <div style={boxStyle}>
+      <div style={cardStyle}>
+        <h1 style={{ margin: 0, fontSize: 34 }}>Admin — Control Acceso CARC</h1>
 
-        <div style={styles.row}>
-          <div style={styles.label}>Modo de carga:</div>
-          <select value={mode} onChange={(e) => setMode(e.target.value)} style={styles.select}>
-            <option value="AGREGAR">AGREGAR (no borra, actualiza por DNI)</option>
-            <option value="NUEVO">NUEVO (borra y reemplaza todo)</option>
-          </select>
+        <div style={{ display: "flex", gap: 12, alignItems: "center", marginTop: 14, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <b>Modo de carga:</b>
+            <select
+              value={modo}
+              onChange={(e) => setModo(e.target.value)}
+              style={{ padding: "10px 12px", borderRadius: 12, border: "1px solid #cbd5e1" }}
+            >
+              <option value="AGREGAR">AGREGAR (no borra, actualiza por DNI)</option>
+              <option value="NUEVO">NUEVO (borra todo y carga de cero)</option>
+            </select>
+          </div>
 
-          <button onClick={saveList} style={styles.btn("primary")}>
+          <button
+            onClick={guardar}
+            style={{
+              padding: "10px 14px",
+              borderRadius: 12,
+              border: "none",
+              background: "#0B4FB3",
+              color: "white",
+              fontWeight: 800,
+              cursor: "pointer",
+            }}
+          >
             Guardar listado
           </button>
-        </div>
-
-        {/* ✅ SUBIDA DE ARCHIVO */}
-        <div style={styles.row}>
-          <div style={{ fontWeight: 900 }}>Cargar archivo:</div>
 
           <input
             ref={fileRef}
             type="file"
-            accept=".json,.csv"
-            style={styles.file}
-            onChange={onPickFile}
+            accept=".csv,text/csv"
+            style={{ display: "none" }}
+            onChange={(e) => onPickCSV(e.target.files?.[0])}
           />
 
           <button
             onClick={() => fileRef.current?.click()}
-            style={styles.btn()}
-            type="button"
+            style={{
+              padding: "10px 14px",
+              borderRadius: 12,
+              border: "1px solid #0B4FB3",
+              background: "white",
+              color: "#0B4FB3",
+              fontWeight: 800,
+              cursor: "pointer",
+            }}
           >
-            Seleccionar archivo (.json / .csv)
+            Seleccionar CSV
+          </button>
+
+          <button
+            onClick={() => {
+              setCsvInfo(null);
+              setMsg({ type: "ok", text: "🧹 CSV limpiado (quedó el JSON manual)." });
+            }}
+            style={{
+              padding: "10px 14px",
+              borderRadius: 12,
+              border: "1px solid #cbd5e1",
+              background: "#f8fafc",
+              color: "#111",
+              fontWeight: 800,
+              cursor: "pointer",
+            }}
+          >
+            Limpiar CSV
           </button>
         </div>
 
-        <div style={styles.hint}>Pegá acá tu listado en formato <b>JSON</b> (o subí CSV/JSON arriba).</div>
+        <div style={{ marginTop: 10, color: "#333" }}>
+          {csvInfo ? (
+            <div style={{ fontSize: 14 }}>
+              <b>CSV cargado:</b> {csvInfo.fileName} — Filas: {csvInfo.dataCount} — Válidas (con DNI):{" "}
+              {csvInfo.normalized.length}
+              <div style={{ marginTop: 6, color: "#555" }}>
+                Encabezados detectados:{" "}
+                <code style={{ background: "#f1f5f9", padding: "2px 6px", borderRadius: 8 }}>
+                  {csvInfo.headers.join(", ")}
+                </code>
+              </div>
+            </div>
+          ) : (
+            <div style={{ fontSize: 14, color: "#666" }}>
+              Podés pegar un listado en formato <b>JSON</b> o seleccionar un <b>CSV</b>.
+            </div>
+          )}
+        </div>
 
-        <textarea value={text} onChange={(e) => setText(e.target.value)} style={styles.textarea} />
+        {msg.text ? (
+          <div
+            style={{
+              marginTop: 14,
+              padding: 12,
+              borderRadius: 12,
+              background: msg.type === "ok" ? "#DCFCE7" : "#FEE2E2",
+              border: "1px solid " + (msg.type === "ok" ? "#86EFAC" : "#FCA5A5"),
+              whiteSpace: "pre-wrap",
+            }}
+          >
+            {msg.text}
+          </div>
+        ) : null}
 
-        {status.text ? <div style={styles.status(status.type)}>{status.text}</div> : null}
+        <div style={{ marginTop: 14 }}>
+          <div style={{ fontWeight: 800, marginBottom: 8 }}>
+            Listado (JSON) — si cargás CSV se completa solo:
+          </div>
+          <textarea
+            value={jsonText}
+            onChange={(e) => setJsonText(e.target.value)}
+            style={{
+              width: "100%",
+              height: 420,
+              padding: 14,
+              borderRadius: 14,
+              border: "1px solid #cbd5e1",
+              fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+              fontSize: 13,
+              lineHeight: 1.5,
+            }}
+          />
+        </div>
 
-        <div style={styles.logged}>✅ Logueado</div>
-        <div style={styles.route}>Ruta: /admin</div>
+        <div style={{ marginTop: 14, fontSize: 13, color: "#666" }}>
+          <b>Formato CSV recomendado (encabezados):</b>{" "}
+          <code style={{ background: "#f1f5f9", padding: "2px 6px", borderRadius: 8 }}>
+            dni,nombre,tipoIngreso,puertaAcceso,ubicacion,cuota
+          </code>
+          <br />
+          <b>cuota</b>: 1 = al día, 0 = debe cuota.
+          <br />
+          Ruta: <b>/admin</b>
+        </div>
       </div>
     </div>
   );
