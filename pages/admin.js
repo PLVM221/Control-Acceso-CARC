@@ -1,21 +1,8 @@
 // pages/admin.js
 import { useEffect, useMemo, useRef, useState } from "react";
 
-const LS_ADMIN = "carc_admin_ok";
 const LS_BASE = "carc_base_personas_v1";
-const LS_LOGS = "carc_admin_logs_v1";
-
-function nowISO() {
-  return new Date().toISOString();
-}
-
-function todayKey() {
-  const d = new Date();
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
-}
+const LS_ADMIN_OK = "carc_admin_ok_v1";
 
 function safeJSONParse(str) {
   try {
@@ -26,15 +13,13 @@ function safeJSONParse(str) {
 }
 
 function normalizePersona(p) {
-  // Campos esperados:
-  // dni (string), nombre (string), tipoIngreso (string), puertaAcceso (string), ubicacion (string opcional), cuota (0/1)
   const dni = String(p?.dni ?? "").trim();
   const nombre = String(p?.nombre ?? "").trim();
-  const tipoIngreso = String(p?.tipoIngreso ?? "").trim();
+  const tipoIngreso = String(p?.tipoIngreso ?? p?.sector ?? "").trim();
   const puertaAcceso = String(p?.puertaAcceso ?? "").trim();
   const ubicacion = String(p?.ubicacion ?? "").trim();
+
   let cuotaRaw = p?.cuota;
-  // cuota puede venir como "0"/"1", 0/1, true/false
   let cuota = 1;
   if (cuotaRaw === 0 || cuotaRaw === "0" || cuotaRaw === false || cuotaRaw === "false") cuota = 0;
   if (cuotaRaw === 1 || cuotaRaw === "1" || cuotaRaw === true || cuotaRaw === "true") cuota = 1;
@@ -50,37 +35,36 @@ function normalizePersona(p) {
 }
 
 function isValidPersona(p) {
-  // DNI mínimo 1 dígito (hay DNIs menores a 8)
   if (!p?.dni) return false;
   if (!/^\d+$/.test(p.dni)) return false;
   if (!p?.nombre) return false;
-  // los otros pueden ser vacíos si querés, pero normalmente se cargan
   return true;
 }
 
-function mergeByDNI(existingList, incomingList) {
+function mergeByDni(existing, incoming) {
   const map = new Map();
-  for (const p of existingList) map.set(p.dni, p);
-  for (const p of incomingList) map.set(p.dni, p);
+  for (const p of existing) map.set(String(p.dni), p);
+  for (const p of incoming) map.set(String(p.dni), p); // pisa por DNI
   return Array.from(map.values());
 }
 
-// CSV simple: separador coma o punto y coma.
-// Encabezado esperado:
-// dni,nombre,tipoIngreso,puertaAcceso,ubicacion,cuota
 function parseCSV(text) {
+  // CSV simple con separador coma o punto y coma
+  // Headers esperados:
+  // dni,nombre,tipoIngreso,puertaAcceso,ubicacion,cuota
+  // cuota: 1 o 0 (opcional, default 1)
   const lines = text
-    .split(/\r?\n/)
+    .replace(/\r/g, "")
+    .split("\n")
     .map((l) => l.trim())
     .filter(Boolean);
 
-  if (lines.length === 0) return { ok: false, error: "CSV vacío" };
+  if (lines.length < 2) return { ok: false, error: "CSV vacío o sin filas." };
 
-  const header = lines[0];
-  const sep = header.includes(";") ? ";" : ",";
-  const cols = header.split(sep).map((c) => c.trim());
+  const sep = lines[0].includes(";") ? ";" : ",";
+  const headers = lines[0].split(sep).map((h) => h.trim());
 
-  const idx = (name) => cols.findIndex((c) => c.toLowerCase() === name.toLowerCase());
+  const idx = (name) => headers.findIndex((h) => h.toLowerCase() === name.toLowerCase());
 
   const iDni = idx("dni");
   const iNombre = idx("nombre");
@@ -89,396 +73,303 @@ function parseCSV(text) {
   const iUbic = idx("ubicacion");
   const iCuota = idx("cuota");
 
-  if (iDni < 0 || iNombre < 0) {
+  if (iDni === -1 || iNombre === -1) {
     return {
       ok: false,
       error:
-        "El CSV debe tener encabezados al menos: dni,nombre (y opcional: tipoIngreso,puertaAcceso,ubicacion,cuota).",
+        "Faltan columnas obligatorias en el CSV. Mínimo: dni,nombre (y opcionales: tipoIngreso,puertaAcceso,ubicacion,cuota).",
     };
   }
 
   const out = [];
   for (let r = 1; r < lines.length; r++) {
-    const row = lines[r];
-    const parts = row.split(sep).map((x) => x.trim().replace(/^"(.*)"$/, "$1"));
-    const p = normalizePersona({
-      dni: parts[iDni] ?? "",
-      nombre: parts[iNombre] ?? "",
-      tipoIngreso: iTipo >= 0 ? parts[iTipo] : "",
-      puertaAcceso: iPuerta >= 0 ? parts[iPuerta] : "",
-      ubicacion: iUbic >= 0 ? parts[iUbic] : "",
-      cuota: iCuota >= 0 ? parts[iCuota] : 1,
-    });
-    out.push(p);
+    const cols = lines[r].split(sep).map((c) => c.trim().replace(/^"|"$/g, ""));
+    const row = {
+      dni: cols[iDni] ?? "",
+      nombre: cols[iNombre] ?? "",
+      tipoIngreso: iTipo >= 0 ? cols[iTipo] ?? "" : "",
+      puertaAcceso: iPuerta >= 0 ? cols[iPuerta] ?? "" : "",
+      ubicacion: iUbic >= 0 ? cols[iUbic] ?? "" : "",
+      cuota: iCuota >= 0 ? cols[iCuota] ?? "1" : "1",
+    };
+    const p = normalizePersona(row);
+    if (isValidPersona(p)) out.push(p);
   }
 
+  if (!out.length) return { ok: false, error: "No se pudo leer ninguna fila válida (dni numérico y nombre requerido)." };
   return { ok: true, value: out };
 }
 
-function downloadText(filename, text, mime = "text/plain;charset=utf-8") {
-  const blob = new Blob([text], { type: mime });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-}
-
-export default function AdminPage() {
+export default function Admin() {
+  const [authed, setAuthed] = useState(false);
   const [password, setPassword] = useState("");
-  const [logged, setLogged] = useState(false);
-
-  const [mode, setMode] = useState("AGREGAR"); // AGREGAR o NUEVO
+  const [mode, setMode] = useState("AGREGAR"); // o NUEVO
   const [text, setText] = useState(
-    `[\n  {\n    "dni":"25328387",\n    "nombre":"Martin Lagamma",\n    "tipoIngreso":"Empleado",\n    "puertaAcceso":"Puerta 1-2-3-4-5-10",\n    "ubicacion":"Total",\n    "cuota":1\n  }\n]\n`
+    `[
+  {
+    "dni":"25328387",
+    "nombre":"Martin Lagamma",
+    "tipoIngreso":"Empleado",
+    "puertaAcceso":"Puerta 1-2-3-4-5-10",
+    "ubicacion":"Total",
+    "cuota":1
+  }
+]`
   );
 
-  const [base, setBase] = useState([]); // base actual local
-  const [msg, setMsg] = useState({ type: "", text: "" });
-
+  const [status, setStatus] = useState({ type: "", text: "" });
   const fileRef = useRef(null);
+  const passRef = useRef(null);
 
-  // cargar estado inicial
   useEffect(() => {
-    const ok = localStorage.getItem(LS_ADMIN) === "1";
-    setLogged(ok);
-
-    const saved = localStorage.getItem(LS_BASE);
-    if (saved) {
-      const parsed = safeJSONParse(saved);
-      if (parsed.ok && Array.isArray(parsed.value)) setBase(parsed.value);
-    }
+    const ok = localStorage.getItem(LS_ADMIN_OK) === "1";
+    setAuthed(ok);
+    setTimeout(() => {
+      if (!ok && passRef.current) passRef.current.focus();
+    }, 0);
   }, []);
 
-  const baseCount = base.length;
-
-  const parsedInput = useMemo(() => {
-    // intentar JSON primero
-    const parsed = safeJSONParse(text);
-    if (parsed.ok) {
-      if (!Array.isArray(parsed.value)) {
-        return { ok: false, error: "El JSON debe ser un ARRAY de personas: [ {..}, {..} ]" };
-      }
-      const normalized = parsed.value.map(normalizePersona).filter(isValidPersona);
-      return { ok: true, value: normalized };
-    }
-    return { ok: false, error: parsed.error };
-  }, [text]);
-
-  function addAdminLog(entry) {
-    const raw = localStorage.getItem(LS_LOGS);
-    const parsed = raw ? safeJSONParse(raw) : { ok: true, value: {} };
-    const logs = parsed.ok && parsed.value && typeof parsed.value === "object" ? parsed.value : {};
-    const key = todayKey();
-    const arr = Array.isArray(logs[key]) ? logs[key] : [];
-    arr.unshift({ at: nowISO(), ...entry });
-    logs[key] = arr;
-    localStorage.setItem(LS_LOGS, JSON.stringify(logs, null, 2));
-  }
+  const styles = useMemo(
+    () => ({
+      page: {
+        minHeight: "100vh",
+        padding: 24,
+        background: "linear-gradient(180deg, #0b4db3 0%, #083a86 100%)",
+        fontFamily: "Lexend, system-ui, -apple-system, Segoe UI, Roboto, Arial",
+        display: "flex",
+        justifyContent: "center",
+      },
+      card: {
+        width: "min(980px, 96vw)",
+        background: "#fff",
+        borderRadius: 22,
+        padding: 22,
+        boxShadow: "0 16px 46px rgba(0,0,0,0.25)",
+      },
+      h1: { margin: 0, fontSize: 36, fontWeight: 1000, letterSpacing: "-0.02em" },
+      row: { display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", marginTop: 12 },
+      label: { fontWeight: 900 },
+      select: { padding: "10px 12px", borderRadius: 12, border: "1px solid #c9d6ea", fontWeight: 800 },
+      btn: (variant) => ({
+        padding: "10px 14px",
+        borderRadius: 12,
+        border: "none",
+        cursor: "pointer",
+        fontWeight: 900,
+        background: variant === "primary" ? "#0b3ea8" : "#eef2f7",
+        color: variant === "primary" ? "#fff" : "#111",
+      }),
+      textarea: {
+        width: "100%",
+        minHeight: 340,
+        borderRadius: 16,
+        border: "1px solid #c9d6ea",
+        padding: 14,
+        fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
+        fontSize: 14,
+        lineHeight: 1.4,
+        marginTop: 10,
+      },
+      status: (type) => ({
+        marginTop: 12,
+        padding: 12,
+        borderRadius: 12,
+        border: "1px solid rgba(0,0,0,0.06)",
+        fontWeight: 900,
+        background:
+          type === "ok" ? "#e8fff1" : type === "warn" ? "#fff4cc" : type === "err" ? "#ffe0e0" : "#f4f6f8",
+        color: type === "ok" ? "#0b4a22" : type === "warn" ? "#6a4b00" : type === "err" ? "#7a0b0b" : "#111",
+      }),
+      logged: {
+        marginTop: 14,
+        padding: 12,
+        borderRadius: 12,
+        background: "#f2f2f2",
+        fontWeight: 900,
+        display: "flex",
+        gap: 10,
+        alignItems: "center",
+      },
+      hint: { marginTop: 10, fontWeight: 800, opacity: 0.85 },
+      route: { marginTop: 10, opacity: 0.7, fontWeight: 800 },
+      passBox: { marginTop: 14, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" },
+      pass: { padding: "12px 14px", borderRadius: 12, border: "1px solid #c9d6ea", fontWeight: 900, minWidth: 240 },
+      file: { display: "none" },
+    }),
+    []
+  );
 
   function login() {
-    // LOGIN SIMPLE LOCAL: guarda bandera en localStorage
-    // Si querés, después lo conectamos a ADMIN_PASSWORD en server.
-    if (!password || password.trim().length < 3) {
-      setMsg({ type: "err", text: "Ingresá una contraseña válida." });
+    // Por ahora password fija local (después con env var y supabase)
+    const ok = password === "admin123";
+    if (!ok) {
+      setStatus({ type: "err", text: "Contraseña incorrecta." });
       return;
     }
-    localStorage.setItem(LS_ADMIN, "1");
-    setLogged(true);
-    setPassword("");
-    setMsg({ type: "ok", text: "Logueado ✅" });
-    addAdminLog({ action: "LOGIN_OK" });
+    localStorage.setItem(LS_ADMIN_OK, "1");
+    setAuthed(true);
+    setStatus({ type: "ok", text: "Logueado." });
   }
 
   function logout() {
-    localStorage.removeItem(LS_ADMIN);
-    setLogged(false);
-    setMsg({ type: "info", text: "Saliste del admin." });
-    addAdminLog({ action: "LOGOUT" });
+    localStorage.removeItem(LS_ADMIN_OK);
+    setAuthed(false);
+    setPassword("");
+    setStatus({ type: "", text: "" });
+    setTimeout(() => {
+      if (passRef.current) passRef.current.focus();
+    }, 0);
   }
 
-  function clearMsgSoon() {
-    setTimeout(() => setMsg({ type: "", text: "" }), 2500);
-  }
-
-  function handleSave() {
-    if (!parsedInput.ok) {
-      setMsg({ type: "err", text: `No se puede guardar: ${parsedInput.error}` });
-      clearMsgSoon();
+  function saveList() {
+    const parsed = safeJSONParse(text);
+    if (!parsed.ok || !Array.isArray(parsed.value)) {
+      setStatus({ type: "err", text: "JSON inválido. Pegá un array [ { ... }, ... ]." });
       return;
     }
 
-    const incoming = parsedInput.value;
-
-    let next = [];
-    if (mode === "NUEVO") {
-      next = incoming;
-    } else {
-      next = mergeByDNI(base, incoming);
+    const incoming = parsed.value.map(normalizePersona).filter(isValidPersona);
+    if (!incoming.length) {
+      setStatus({ type: "err", text: "No hay filas válidas. Requiere dni numérico y nombre." });
+      return;
     }
 
-    // guardar base
-    localStorage.setItem(LS_BASE, JSON.stringify(next, null, 2));
-    setBase(next);
+    const existingRaw = localStorage.getItem(LS_BASE);
+    const existingParsed = existingRaw ? safeJSONParse(existingRaw) : { ok: true, value: [] };
+    const existing = existingParsed.ok && Array.isArray(existingParsed.value)
+      ? existingParsed.value.map(normalizePersona).filter(isValidPersona)
+      : [];
 
-    addAdminLog({
-      action: mode === "NUEVO" ? "BASE_REPLACED" : "BASE_MERGED",
-      incoming: incoming.length,
-      total: next.length,
-    });
+    const finalArr = mode === "NUEVO" ? incoming : mergeByDni(existing, incoming);
 
-    setMsg({
+    localStorage.setItem(LS_BASE, JSON.stringify(finalArr, null, 2));
+    setStatus({
       type: "ok",
-      text:
-        mode === "NUEVO"
-          ? `Base reemplazada ✅ (${incoming.length} registros)`
-          : `Base actualizada ✅ (+${incoming.length} / total ${next.length})`,
+      text: `Guardado OK. Registros en base: ${finalArr.length}. Modo: ${mode}.`,
     });
-    clearMsgSoon();
   }
 
-  function handleFilePick() {
-    fileRef.current?.click();
-  }
-
-  async function handleFileChange(e) {
+  async function onPickFile(e) {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const name = file.name.toLowerCase();
-    const txt = await file.text();
+    const ext = (file.name.split(".").pop() || "").toLowerCase();
+    const textFile = await file.text();
 
-    if (name.endsWith(".json")) {
-      setText(txt);
-      setMsg({ type: "info", text: "JSON cargado en el editor." });
-      clearMsgSoon();
-      addAdminLog({ action: "FILE_LOADED_JSON", filename: file.name, bytes: file.size });
-      return;
-    }
-
-    if (name.endsWith(".csv")) {
-      const parsed = parseCSV(txt);
-      if (!parsed.ok) {
-        setMsg({ type: "err", text: parsed.error });
-        clearMsgSoon();
+    if (ext === "json") {
+      // si es JSON array, lo pegamos directo en el textarea (formateado)
+      const parsed = safeJSONParse(textFile);
+      if (!parsed.ok || !Array.isArray(parsed.value)) {
+        setStatus({ type: "err", text: "El JSON del archivo no es un array válido." });
         return;
       }
-      // lo pasamos a JSON en el textarea para que puedas ver/editar
-      const json = JSON.stringify(parsed.value, null, 2);
-      setText(json);
-      setMsg({ type: "ok", text: `CSV convertido a JSON ✅ (${parsed.value.length} filas)` });
-      clearMsgSoon();
-      addAdminLog({ action: "FILE_LOADED_CSV", filename: file.name, rows: parsed.value.length, bytes: file.size });
+      setText(JSON.stringify(parsed.value, null, 2));
+      setStatus({ type: "ok", text: "Archivo JSON cargado. Ahora tocá “Guardar listado”." });
       return;
     }
 
-    setMsg({ type: "err", text: "Subí un .csv o .json" });
-    clearMsgSoon();
+    if (ext === "csv") {
+      const parsed = parseCSV(textFile);
+      if (!parsed.ok) {
+        setStatus({ type: "err", text: parsed.error });
+        return;
+      }
+      setText(JSON.stringify(parsed.value, null, 2));
+      setStatus({ type: "ok", text: "CSV importado y convertido a JSON. Ahora tocá “Guardar listado”." });
+      return;
+    }
+
+    setStatus({ type: "warn", text: "Formato no soportado. Subí .json o .csv" });
   }
 
-  function downloadBaseJSON() {
-    const raw = localStorage.getItem(LS_BASE) || "[]";
-    downloadText("personas.json", raw, "application/json;charset=utf-8");
-    addAdminLog({ action: "DOWNLOAD_BASE_JSON" });
+  if (!authed) {
+    return (
+      <div style={styles.page}>
+        <div style={styles.card}>
+          <h1 style={styles.h1}>Admin — Control Acceso CARC</h1>
+
+          <div style={styles.hint}>Ingresá la contraseña para entrar.</div>
+
+          {/* ✅ ENTER PARA INGRESAR */}
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              login();
+            }}
+            style={styles.passBox}
+          >
+            <input
+              ref={passRef}
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="Contraseña"
+              style={styles.pass}
+            />
+            <button type="submit" style={styles.btn("primary")}>
+              Entrar
+            </button>
+          </form>
+
+          {status.text ? <div style={styles.status(status.type)}>{status.text}</div> : null}
+
+          <div style={styles.route}>Ruta: /admin</div>
+        </div>
+      </div>
+    );
   }
-
-  function downloadLogsJSON() {
-    const raw = localStorage.getItem(LS_LOGS) || "{}";
-    downloadText("admin-logs.json", raw, "application/json;charset=utf-8");
-    addAdminLog({ action: "DOWNLOAD_LOGS" });
-  }
-
-  // estilos
-  const bg = {
-    minHeight: "100vh",
-    padding: 24,
-    background: "linear-gradient(180deg, #0b4db3 0%, #083a86 100%)",
-    fontFamily: "Lexend, system-ui, -apple-system, Segoe UI, Roboto, Arial",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-  };
-
-  const card = {
-    width: "min(980px, 96vw)",
-    background: "#fff",
-    borderRadius: 18,
-    padding: 22,
-    boxShadow: "0 14px 40px rgba(0,0,0,0.22)",
-  };
-
-  const h1 = { margin: 0, fontSize: 34, fontWeight: 900, letterSpacing: "-0.02em" };
-  const row = { display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" };
-  const label = { fontWeight: 800, color: "#0b3ea8" };
-
-  const select = {
-    padding: "10px 12px",
-    borderRadius: 12,
-    border: "1px solid #c9d6ea",
-    background: "#fff",
-    fontWeight: 800,
-  };
-
-  const btn = (variant) => ({
-    padding: "10px 14px",
-    borderRadius: 12,
-    border: "none",
-    cursor: "pointer",
-    fontWeight: 900,
-    ...(variant === "primary"
-      ? { background: "#0b3ea8", color: "#fff" }
-      : variant === "warn"
-      ? { background: "#ffd100", color: "#111" }
-      : { background: "#eef2f7", color: "#111" }),
-  });
-
-  const textarea = {
-    width: "100%",
-    minHeight: 320,
-    resize: "vertical",
-    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace",
-    fontSize: 14,
-    padding: 14,
-    borderRadius: 14,
-    border: "1px solid #c9d6ea",
-    outline: "none",
-  };
-
-  const pill = (t) => ({
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 8,
-    padding: "10px 12px",
-    borderRadius: 14,
-    background:
-      t === "ok" ? "#e8fff1" : t === "err" ? "#ffe9ea" : t === "info" ? "#eef6ff" : "#f4f6f8",
-    color: t === "err" ? "#7a0c12" : "#111",
-    border: "1px solid rgba(0,0,0,0.06)",
-    fontWeight: 800,
-  });
 
   return (
-    <div style={bg}>
-      <div style={card}>
+    <div style={styles.page}>
+      <div style={styles.card}>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-          <h1 style={h1}>Admin — Control Acceso CARC</h1>
-
-          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-            <div style={{ fontWeight: 900, color: "#0b3ea8" }}>
-              Base local: <span style={{ color: "#111" }}>{baseCount} registros</span>
-            </div>
-            {logged ? (
-              <button onClick={logout} style={btn()}>
-                Salir
-              </button>
-            ) : null}
-          </div>
+          <h1 style={styles.h1}>Admin — Control Acceso CARC</h1>
+          <button onClick={logout} style={styles.btn()}>
+            Salir
+          </button>
         </div>
 
-        <div style={{ height: 14 }} />
+        <div style={styles.row}>
+          <div style={styles.label}>Modo de carga:</div>
+          <select value={mode} onChange={(e) => setMode(e.target.value)} style={styles.select}>
+            <option value="AGREGAR">AGREGAR (no borra, actualiza por DNI)</option>
+            <option value="NUEVO">NUEVO (borra y reemplaza todo)</option>
+          </select>
 
-        {!logged ? (
-          <div style={{ display: "grid", gap: 12 }}>
-            <div style={{ fontWeight: 900, color: "#0b3ea8" }}>Ingresá contraseña admin</div>
+          <button onClick={saveList} style={styles.btn("primary")}>
+            Guardar listado
+          </button>
+        </div>
 
-            {/* ✅ FORM para que ENTER funcione */}
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                login();
-              }}
-              style={{ display: "flex", gap: 12, alignItems: "center" }}
-            >
-              <input
-                type="password"
-                placeholder="Contraseña admin"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                style={{
-                  padding: "12px",
-                  borderRadius: "12px",
-                  border: "1px solid #c9d6ea",
-                  fontSize: "16px",
-                  flex: 1,
-                }}
-              />
-              <button type="submit" style={btn("primary")}>
-                Entrar
-              </button>
-            </form>
+        {/* ✅ SUBIDA DE ARCHIVO */}
+        <div style={styles.row}>
+          <div style={{ fontWeight: 900 }}>Cargar archivo:</div>
 
-            {msg.text ? <div style={pill(msg.type)}>{msg.text}</div> : null}
-          </div>
-        ) : (
-          <>
-            {/* Toolbar */}
-            <div style={row}>
-              <div style={label}>Modo de carga:</div>
-              <select value={mode} onChange={(e) => setMode(e.target.value)} style={select}>
-                <option value="AGREGAR">AGREGAR (no borra, actualiza por DNI)</option>
-                <option value="NUEVO">NUEVO (borra y reemplaza todo)</option>
-              </select>
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".json,.csv"
+            style={styles.file}
+            onChange={onPickFile}
+          />
 
-              <button onClick={handleSave} style={btn("primary")}>
-                Guardar listado
-              </button>
+          <button
+            onClick={() => fileRef.current?.click()}
+            style={styles.btn()}
+            type="button"
+          >
+            Seleccionar archivo (.json / .csv)
+          </button>
+        </div>
 
-              <button onClick={handleFilePick} style={btn("warn")}>
-                Subir CSV / JSON
-              </button>
+        <div style={styles.hint}>Pegá acá tu listado en formato <b>JSON</b> (o subí CSV/JSON arriba).</div>
 
-              <button onClick={downloadBaseJSON} style={btn()}>
-                Descargar base (JSON)
-              </button>
+        <textarea value={text} onChange={(e) => setText(e.target.value)} style={styles.textarea} />
 
-              <button onClick={downloadLogsJSON} style={btn()}>
-                Descargar logs
-              </button>
+        {status.text ? <div style={styles.status(status.type)}>{status.text}</div> : null}
 
-              <input
-                ref={fileRef}
-                type="file"
-                accept=".csv,.json"
-                style={{ display: "none" }}
-                onChange={handleFileChange}
-              />
-            </div>
-
-            <div style={{ height: 10 }} />
-
-            <div style={{ color: "#1f2a37", fontWeight: 700 }}>
-              Pegá tu listado en formato <b>JSON</b> o subí un <b>CSV/JSON</b>.
-              <div style={{ marginTop: 6, fontSize: 13, opacity: 0.9 }}>
-                CSV esperado (encabezados): <b>dni,nombre,tipoIngreso,puertaAcceso,ubicacion,cuota</b> (cuota: 1 al día / 0 debe)
-              </div>
-            </div>
-
-            <div style={{ height: 10 }} />
-
-            <textarea value={text} onChange={(e) => setText(e.target.value)} style={textarea} />
-
-            <div style={{ height: 10 }} />
-
-            <div style={row}>
-              <div style={pill("ok")}>✅ Logueado</div>
-
-              {parsedInput.ok ? (
-                <div style={pill("info")}>Listo para guardar: {parsedInput.value.length} registros válidos</div>
-              ) : (
-                <div style={pill("err")}>JSON inválido: {parsedInput.error}</div>
-              )}
-
-              {msg.text ? <div style={pill(msg.type)}>{msg.text}</div> : null}
-            </div>
-
-            <div style={{ marginTop: 10, fontSize: 12, opacity: 0.8 }}>
-              Ruta: <b>/admin</b>
-            </div>
-          </>
-        )}
+        <div style={styles.logged}>✅ Logueado</div>
+        <div style={styles.route}>Ruta: /admin</div>
       </div>
     </div>
   );
