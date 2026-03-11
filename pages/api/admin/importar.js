@@ -1,11 +1,9 @@
-// pages/api/admin/importar.js
 import { createClient } from "@supabase/supabase-js";
 
-export const config = {
-  api: {
-    bodyParser: { sizeLimit: "2mb" },
-  },
-};
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
 
 function normalizeDni(dni) {
   return String(dni ?? "").trim().replace(/\D/g, "");
@@ -17,180 +15,202 @@ function to01(v) {
   return 1;
 }
 
-function getSupabaseAdmin() {
-  const url = process.env.SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !key) throw new Error("Faltan SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY");
-  return createClient(url, key, { auth: { persistSession: false } });
+function dedupeByDni(arr) {
+  const map = new Map();
+  for (const item of arr || []) {
+    const dni = normalizeDni(item?.dni);
+    if (!dni) continue;
+
+    map.set(dni, {
+      dni,
+      nombre: String(item?.nombre ?? "").trim(),
+      tipoIngreso: String(item?.tipoIngreso ?? "").trim(),
+      ubicacion: String(item?.ubicacion ?? "").trim(),
+      cuota: to01(item?.cuota),
+    });
+  }
+  return Array.from(map.values());
 }
 
-async function requireAuth(req) {
-  if (!process.env.ADMIN_PASSWORD) throw new Error("ADMIN_PASSWORD no configurada");
-  const { password } = req.body || {};
-  if (String(password || "") !== String(process.env.ADMIN_PASSWORD)) {
-    const e = new Error("Contraseña incorrecta");
-    e.status = 401;
-    throw e;
+function chunkArray(arr, size) {
+  const out = [];
+  for (let i = 0; i < arr.length; i += size) {
+    out.push(arr.slice(i, i + size));
   }
+  return out;
+}
+
+async function recalcularCuotasPorDni(dnis) {
+  if (!Array.isArray(dnis) || dnis.length === 0) return;
+
+  const { data: fuentes, error } = await supabase
+    .from("persona_fuentes")
+    .select("dni, abonado, abonado_cuota, venta, listado")
+    .in("dni", dnis);
+
+  if (error) throw new Error("No se pudo leer persona_fuentes: " + error.message);
+
+  const updates = (fuentes || []).map((f) => {
+    let cuota = 0;
+
+    // prioridad: venta/listado siempre al día
+    if (f.venta || f.listado) {
+      cuota = 1;
+    } else if (f.abonado) {
+      cuota = Number(f.abonado_cuota) === 0 ? 0 : 1;
+    }
+
+    return {
+      dni: f.dni,
+      cuota,
+      updated_at: new Date().toISOString(),
+    };
+  });
+
+  if (updates.length === 0) return;
+
+  const { error: upErr } = await supabase
+    .from("personas")
+    .upsert(updates, { onConflict: "dni" });
+
+  if (upErr) throw new Error("No se pudo recalcular cuota: " + upErr.message);
 }
 
 export default async function handler(req, res) {
-  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Método no permitido" });
+  }
 
   try {
-    await requireAuth(req);
+    const { password, mode, source, clear, persons } = req.body || {};
 
-    const supabase = getSupabaseAdmin();
-    const {
-      source, // "abonados" | "venta" | "listado"
-      mode,   // "NUEVO" | "AGREGAR"
-      clear,  // true/false => si true, borra SOLO esa fuente (o todo personas si source === "listado" y querés)
-      persons // array de registros ya normalizados desde el frontend
-    } = req.body || {};
+    if (!password || password !== process.env.ADMIN_PASSWORD) {
+      return res.status(401).json({ error: "Contraseña incorrecta" });
+    }
 
     if (!["abonados", "venta", "listado"].includes(source)) {
-      return res.status(400).json({ error: "source inválido" });
+      return res.status(400).json({ error: "Fuente inválida" });
     }
 
-    // 1) Si clear=true => limpiamos esa fuente en persona_fuentes
+    // ✅ Si viene clear=true, limpiamos toda la base
+    // Esto se usa en modo NUEVO antes de empezar a subir lotes
     if (clear) {
-      // setea en false el flag de esa fuente
-      const field = source === "abonados" ? "abonado" : source;
-      const patch = { [field]: false, updated_at: new Date().toISOString() };
+      const { error: errFuentes } = await supabase
+        .from("persona_fuentes")
+        .delete()
+        .gt("dni", "");
 
-      // Para abonados además limpiamos abonado_cuota a 1 por defecto
-      if (source === "abonados") patch.abonado_cuota = 1;
-
-      // update masivo: no hay update all directo, hacemos por SQL simple usando RPC no;
-      // alternativa: borrar tabla completa si mode NUEVO + source listado, pero te dejo simple:
-      // BORRAR TODO y reconstruir siempre funciona mejor:
-      const { error: delErr } = await supabase.from("persona_fuentes").delete().gt("dni", "");
-      if (delErr) return res.status(500).json({ error: "No se pudo limpiar fuentes", detail: delErr.message });
-
-      // Si borramos fuentes completas, también borramos personas para evitar inconsistencias
-      const { error: delPers } = await supabase.from("personas").delete().gt("dni", "");
-      if (delPers) return res.status(500).json({ error: "No se pudo limpiar personas", detail: delPers.message });
-
-      // Si este request era solo “clear”, devolvemos ok
-      if (!Array.isArray(persons) || persons.length === 0) {
-        return res.status(200).json({ ok: true, cleared: true, source });
+      if (errFuentes) {
+        return res.status(500).json({ error: "No se pudo limpiar persona_fuentes", detail: errFuentes.message });
       }
-    }
 
-    const arr = Array.isArray(persons) ? persons : [];
-    if (arr.length === 0) return res.status(400).json({ error: "Listado vacío" });
+      const { error: errPersonas } = await supabase
+        .from("personas")
+        .delete()
+        .gt("dni", "");
 
-    // 2) Dedup por DNI dentro del lote
-    const map = new Map();
-    for (const p of arr) {
-      const dni = normalizeDni(p?.dni);
-      if (!dni) continue;
-      map.set(dni, {
-        dni,
-        nombre: String(p?.nombre ?? "").trim(),
-        tipoIngreso: String(p?.tipoIngreso ?? "").trim(),
-        puertaAcceso: String(p?.puertaAcceso ?? "").trim(),
-        ubicacion: String(p?.ubicacion ?? "").trim(),
-        cuota: source === "abonados" ? to01(p?.cuota) : 1, // venta/listado => 1
+      if (errPersonas) {
+        return res.status(500).json({ error: "No se pudo limpiar personas", detail: errPersonas.message });
+      }
+
+      return res.status(200).json({
+        ok: true,
+        cleared: true,
+        source,
       });
     }
-    const cleaned = Array.from(map.values());
-    if (cleaned.length === 0) return res.status(400).json({ error: "Sin DNIs válidos" });
 
-    // 3) Upsert en persona_fuentes
-    const fuenteRows = cleaned.map((p) => {
-      if (source === "abonados") {
-        return {
-          dni: p.dni,
-          abonado: true,
-          abonado_cuota: p.cuota,
-          updated_at: new Date().toISOString(),
-        };
+    if (!Array.isArray(persons) || persons.length === 0) {
+      return res.status(400).json({ error: "Listado vacío" });
+    }
+
+    const cleaned = dedupeByDni(persons);
+
+    if (cleaned.length === 0) {
+      return res.status(400).json({ error: "No hay DNIs válidos" });
+    }
+
+    // 🔹 1) Guardar flags en persona_fuentes
+    let fuenteRows = [];
+
+    if (source === "abonados") {
+      fuenteRows = cleaned.map((p) => ({
+        dni: p.dni,
+        abonado: true,
+        abonado_cuota: to01(p.cuota),
+        updated_at: new Date().toISOString(),
+      }));
+    }
+
+    if (source === "venta") {
+      fuenteRows = cleaned.map((p) => ({
+        dni: p.dni,
+        venta: true,
+        updated_at: new Date().toISOString(),
+      }));
+    }
+
+    if (source === "listado") {
+      fuenteRows = cleaned.map((p) => ({
+        dni: p.dni,
+        listado: true,
+        updated_at: new Date().toISOString(),
+      }));
+    }
+
+    // upsert en bloques por seguridad
+    const fuenteChunks = chunkArray(fuenteRows, 500);
+    for (const chunk of fuenteChunks) {
+      const { error } = await supabase
+        .from("persona_fuentes")
+        .upsert(chunk, { onConflict: "dni" });
+
+      if (error) {
+        return res.status(500).json({
+          error: "No se pudo guardar persona_fuentes",
+          detail: error.message,
+        });
       }
-      if (source === "venta") {
-        return { dni: p.dni, venta: true, updated_at: new Date().toISOString() };
-      }
-      return { dni: p.dni, listado: true, updated_at: new Date().toISOString() };
-    });
+    }
 
-    const { error: fErr } = await supabase
-      .from("persona_fuentes")
-      .upsert(fuenteRows, { onConflict: "dni" });
-
-    if (fErr) return res.status(500).json({ error: "No se pudo guardar fuentes", detail: fErr.message });
-
-    // 4) Upsert en personas (datos visibles)
-    // Precedencia de datos:
-    // - listado pisa datos fuertes (nombre/tipo/puerta/ubicacion) si vienen
-    // - venta puede aportar tipoIngreso/puerta/ubicacion si lo cargás
-    // - abonados normalmente no trae puerta, pero puede traer nombre/tipo
-    //
-    // Para no complicar: si el campo viene vacío, no lo pisamos (lo dejamos como está).
-    // Para eso hacemos upsert “completo” pero asegurando que al menos preserve cuando no hay valor:
-    // (en SQL sería COALESCE, pero acá lo hacemos simple: enviamos siempre valores; si vienen vacíos,
-    // supabase igual pisa con vacío. Entonces: SIEMPRE mandamos valores y evitamos vacío con null.)
+    // 🔹 2) Guardar datos visibles en personas
+    // puerta_acceso ya NO se usa
     const personaRows = cleaned.map((p) => ({
       dni: p.dni,
       nombre: p.nombre || null,
       tipo_ingreso: p.tipoIngreso || null,
-      puerta_acceso: p.puertaAcceso || null,
       ubicacion: p.ubicacion || null,
-      // cuota final se recalcula abajo, pero dejamos algo (se recalcula global luego)
-      cuota: 1,
+      cuota: source === "abonados" ? to01(p.cuota) : 1,
       updated_at: new Date().toISOString(),
     }));
 
-    const { error: pErr } = await supabase
-      .from("personas")
-      .upsert(personaRows, { onConflict: "dni" });
+    const personaChunks = chunkArray(personaRows, 500);
+    for (const chunk of personaChunks) {
+      const { error } = await supabase
+        .from("personas")
+        .upsert(chunk, { onConflict: "dni" });
 
-    if (pErr) return res.status(500).json({ error: "No se pudo guardar personas", detail: pErr.message });
-
-    // 5) Recalcular cuota final en personas:
-    // cuota = 1 si venta o listado, sino abonado_cuota, sino 0
-    // Hacemos 2 updates simples:
-    // - set cuota=1 donde venta/listado true
-    // - set cuota=abonado_cuota donde no venta/listado y abonado true
-    // - set cuota=0 donde ninguna fuente true (opcional; si borraste todo, queda vacío)
-    //
-    // Como supabase-js no hace update with join fácil, lo hacemos con SQL RPC no;
-    // para simplificar y que funcione YA: calculamos cuota en frontend y mandamos cuota final en import.
-    // ✅ Entonces: recalculamos acá por DNI del lote (rápido y seguro).
-
-    // Traemos flags de esos DNIs
-    const dnis = cleaned.map((x) => x.dni);
-    const { data: flags, error: gErr } = await supabase
-      .from("persona_fuentes")
-      .select("dni,abonado,abonado_cuota,venta,listado")
-      .in("dni", dnis);
-
-    if (gErr) return res.status(500).json({ error: "No se pudo leer fuentes", detail: gErr.message });
-
-    const cuotaMap = new Map();
-    for (const f of flags || []) {
-      const cuotaFinal = f.venta || f.listado ? 1 : (f.abonado ? (Number(f.abonado_cuota) === 0 ? 0 : 1) : 0);
-      cuotaMap.set(f.dni, cuotaFinal);
+      if (error) {
+        return res.status(500).json({
+          error: "No se pudo guardar personas",
+          detail: error.message,
+        });
+      }
     }
 
-    const cuotaUpdates = dnis.map((dni) => ({ dni, cuota: cuotaMap.get(dni) ?? 0 }));
-
-    const { error: uErr } = await supabase
-      .from("personas")
-      .upsert(cuotaUpdates, { onConflict: "dni" });
-
-    if (uErr) return res.status(500).json({ error: "No se pudo actualizar cuota", detail: uErr.message });
+    // 🔹 3) Recalcular cuota final para esos DNI
+    await recalcularCuotasPorDni(cleaned.map((x) => x.dni));
 
     return res.status(200).json({
       ok: true,
       source,
-      modo: mode || "N/A",
+      mode,
       guardadas: cleaned.length,
-      cleared: !!clear,
     });
   } catch (e) {
-    return res.status(e.status || 500).json({
-      error: e.status ? e.message : "Error interno",
-      detail: e.status ? undefined : (e?.message || String(e)),
+    return res.status(500).json({
+      error: "Error interno",
+      detail: e.message || String(e),
     });
   }
 }
