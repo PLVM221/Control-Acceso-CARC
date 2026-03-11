@@ -15,9 +15,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    let { dni } = req.query;
-
-    dni = normalizeDni(dni);
+    const dni = normalizeDni(req.query.dni);
 
     if (!dni) {
       return res.status(400).json({
@@ -40,22 +38,18 @@ export default async function handler(req, res) {
       });
     }
 
-    // Guardar log de búsqueda
     try {
       await supabase.from("logs_accesos").insert({
         dni,
         encontrado: !!data,
         fecha: new Date().toISOString(),
       });
-    } catch (logErr) {
-      // no frenamos la respuesta si falla el log
-      console.error("Error guardando log:", logErr.message);
+    } catch (e) {
+      console.error("Error guardando log:", e.message);
     }
 
     if (!data) {
-      return res.status(200).json({
-        found: false,
-      });
+      return res.status(200).json({ found: false });
     }
 
     return res.status(200).json({
