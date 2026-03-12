@@ -52,6 +52,8 @@ export default function HomePage() {
       agregarHistorial(dniBuscado);
 
       if (!data.found) {
+        new Audio("/sounds/error.mp3").play();
+
         setResultado({
           estado: "no_existe",
           mensaje: "DNI no existe.",
@@ -60,15 +62,19 @@ export default function HomePage() {
       }
 
       if (Number(data.persona?.cuota) === 1) {
+        new Audio("/sounds/ok.mp3").play();
+
         setResultado({
           estado: "ok",
           mensaje: "Acceso habilitado.",
           persona: data.persona,
         });
       } else {
+        new Audio("/sounds/error.mp3").play();
+
         setResultado({
-          estado: "deuda",
-          mensaje: "Debe cuota.",
+          estado: "denegado",
+          mensaje: "Cuota pendiente.",
           persona: data.persona,
         });
       }
@@ -100,7 +106,7 @@ export default function HomePage() {
   const colorResultado =
     resultado?.estado === "ok"
       ? { bg: "#dcfce7", border: "#86efac", color: "#166534" }
-      : resultado?.estado === "deuda"
+      : resultado?.estado === "denegado"
       ? { bg: "#fef3c7", border: "#fcd34d", color: "#92400e" }
       : resultado?.estado === "no_existe"
       ? { bg: "#ffedd5", border: "#fdba74", color: "#9a3412" }
