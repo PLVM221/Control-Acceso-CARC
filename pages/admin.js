@@ -65,42 +65,6 @@ function parseSemicolonCSV(text) {
     .filter((r) => r.some((x) => x !== ""));
 }
 
-// CLEVER fijo:
-// 3 = nombre
-// 4 = dni
-// 14 = nombre ubicación
-// 16 = tipo ingreso
-// 19 = cuota
-function parseCleverPersons(text) {
-  const rows = parseSemicolonCSV(text);
-  if (rows.length < 2) return { headers: [], items: [] };
-
-  const headers = rows[0];
-  const data = rows.slice(1);
-
-  const items = [];
-  for (const r of data) {
-    const dni = normalizeDni(r[3]);        // col 4
-    if (!dni) continue;
-
-    items.push({
-      dni,
-      nombre: String(r[2] ?? "").trim(),        // col 3
-      tipoIngreso: String(r[15] ?? "").trim(),  // col 16
-      ubicacion: String(r[13] ?? "").trim(),    // col 14
-      cuota: to01(r[18]),                       // col 19
-    });
-  }
-
-  const map = new Map();
-  for (const p of items) map.set(p.dni, p);
-
-  return {
-    headers,
-    items: Array.from(map.values()),
-  };
-}
-
 function parseGenericCSV(text) {
   const sample = text.slice(0, 2000);
   const seps = [",", ";", "\t"];
@@ -141,6 +105,7 @@ function parseGenericCSV(text) {
     }
     cur += ch;
   }
+
   if (cur.length || row.length) {
     row.push(cur);
     rows.push(row);
@@ -155,6 +120,75 @@ function parseGenericCSV(text) {
   return {
     headers: cleaned[0],
     rows: cleaned.slice(1),
+  };
+}
+
+// CLEVER fijo:
+// col 3 = nombre
+// col 4 = dni
+// col 14 = nombre ubicación
+// col 16 = tipo ingreso
+// col 19 = cuota
+function parseCleverPersons(text) {
+  const rows = parseSemicolonCSV(text);
+  if (rows.length < 2) return { headers: [], items: [] };
+
+  const headers = rows[0];
+  const data = rows.slice(1);
+
+  const items = [];
+  for (const r of data) {
+    const dni = normalizeDni(r[3]); // col 4
+    if (!dni) continue;
+
+    items.push({
+      dni,
+      nombre: String(r[2] ?? "").trim(),        // col 3
+      tipoIngreso: String(r[15] ?? "").trim(),  // col 16
+      ubicacion: String(r[13] ?? "").trim(),    // col 14
+      cuota: to01(r[18]),                       // col 19
+    });
+  }
+
+  const map = new Map();
+  for (const p of items) map.set(p.dni, p);
+
+  return {
+    headers,
+    items: Array.from(map.values()),
+  };
+}
+
+// DEPORTICK fijo:
+// col 1 = dni
+// col 8 = nombre
+// col 6 = tipo ingreso
+// col 7 = sector/ubicación
+// cuota = 1 fijo
+function parseDeportickPersons(text) {
+  const { headers, rows } = parseGenericCSV(text);
+  if (!headers.length || !rows.length) return { headers: [], items: [] };
+
+  const items = [];
+  for (const r of rows) {
+    const dni = normalizeDni(r[0]); // col 1
+    if (!dni) continue;
+
+    items.push({
+      dni,
+      nombre: String(r[7] ?? "").trim(),       // col 8
+      tipoIngreso: String(r[5] ?? "").trim(),  // col 6
+      ubicacion: String(r[6] ?? "").trim(),    // col 7
+      cuota: 1,
+    });
+  }
+
+  const map = new Map();
+  for (const p of items) map.set(p.dni, p);
+
+  return {
+    headers,
+    items: Array.from(map.values()),
   };
 }
 
@@ -210,7 +244,7 @@ export default function AdminPage() {
   const [mode, setMode] = useState("NUEVO");
 
   const [abonados, setAbonados] = useState({ file: null, headers: [], items: [], valid: 0 });
-  const [venta, setVenta] = useState({ file: null, headers: [], rows: [], mapping: {}, items: [], valid: 0 });
+  const [venta, setVenta] = useState({ file: null, headers: [], items: [], valid: 0 });
   const [listado, setListado] = useState({ file: null, headers: [], rows: [], mapping: {}, items: [], valid: 0 });
 
   const [statusMsg, setStatusMsg] = useState("");
@@ -255,7 +289,22 @@ export default function AdminPage() {
     setErrorMsg("");
   }
 
-  async function loadGeneric(file, source) {
+  async function loadDeportick(file) {
+    const text = await file.text();
+    const { headers, items } = parseDeportickPersons(text);
+
+    setVenta({
+      file,
+      headers,
+      items,
+      valid: items.length,
+    });
+
+    setStatusMsg(`Deportick cargado: ${file.name} — Válidas: ${items.length}`);
+    setErrorMsg("");
+  }
+
+  async function loadListado(file) {
     const text = await file.text();
     const { headers, rows } = parseGenericCSV(text);
     const mapping = guessMapping(headers);
@@ -266,36 +315,34 @@ export default function AdminPage() {
       cuotaFija1: true,
     });
 
-    const payload = {
+    setListado({
       file,
       headers,
       rows,
       mapping,
       items,
       valid: items.length,
-    };
+    });
 
-    if (source === "venta") setVenta(payload);
-    if (source === "listado") setListado(payload);
-
-    setStatusMsg(`${source} cargado: ${file.name} — Válidas: ${items.length}`);
+    setStatusMsg(`Listado cargado: ${file.name} — Válidas: ${items.length}`);
     setErrorMsg("");
   }
 
-  function updateMapping(source, key, value) {
-    const st = source === "venta" ? venta : listado;
-    const mapping = { ...st.mapping, [key]: value };
+  function updateMappingListado(key, value) {
+    const mapping = { ...listado.mapping, [key]: value };
     const items = buildPersonsFromMapping({
-      headers: st.headers,
-      rows: st.rows,
+      headers: listado.headers,
+      rows: listado.rows,
       mapping,
       cuotaFija1: true,
     });
 
-    const next = { ...st, mapping, items, valid: items.length };
-
-    if (source === "venta") setVenta(next);
-    if (source === "listado") setListado(next);
+    setListado((prev) => ({
+      ...prev,
+      mapping,
+      items,
+      valid: items.length,
+    }));
   }
 
   function clearSource(source) {
@@ -304,7 +351,7 @@ export default function AdminPage() {
       if (fileAb.current) fileAb.current.value = "";
     }
     if (source === "venta") {
-      setVenta({ file: null, headers: [], rows: [], mapping: {}, items: [], valid: 0 });
+      setVenta({ file: null, headers: [], items: [], valid: 0 });
       if (fileVe.current) fileVe.current.value = "";
     }
     if (source === "listado") {
@@ -348,7 +395,10 @@ export default function AdminPage() {
     setStatusMsg("");
     setProgress(null);
 
-    const st = source === "abonados" ? abonados : source === "venta" ? venta : listado;
+    const st =
+      source === "abonados" ? abonados :
+      source === "venta" ? venta :
+      listado;
 
     if (!st.items || st.items.length === 0) {
       return setErrorMsg(`No hay datos cargados en ${source}.`);
@@ -426,13 +476,61 @@ export default function AdminPage() {
     </div>
   );
 
-  const CardGeneric = ({ title, icon, source, state }) => (
+  const CardDeportick = () => (
     <div style={S.sourceCard}>
       <div style={S.sourceHeader}>
         <div style={S.sourceTitle}>
-          <span style={S.icon}>{icon}</span>
+          <span style={S.icon}>🧾</span>
           <div>
-            <div style={S.sourceName}>{title}</div>
+            <div style={S.sourceName}>Venta (Deportick)</div>
+            <div style={S.sourceHint}>Todos quedan habilitados. Toma el archivo automáticamente.</div>
+          </div>
+        </div>
+
+        <div style={S.sourceActions}>
+          <label style={S.btnOutline}>
+            Seleccionar CSV
+            <input
+              ref={fileVe}
+              type="file"
+              accept=".csv,text/csv,.xlsx,.xls"
+              style={{ display: "none" }}
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) loadDeportick(f);
+              }}
+            />
+          </label>
+          <button style={S.btnOutline} onClick={() => clearSource("venta")}>Limpiar</button>
+          <button style={S.btnPrimary} onClick={() => importarFuente("venta")}>Importar</button>
+        </div>
+      </div>
+
+      <div style={S.sourceBody}>
+        <div style={S.badges}>
+          <span style={S.badge}>Archivo: <b>{venta.file ? venta.file.name : "—"}</b></span>
+          <span style={S.badge}>Válidas: <b>{venta.valid}</b></span>
+        </div>
+
+        <div style={S.fixedMap}>
+          <div><b>DNI</b> → columna 1</div>
+          <div><b>Nombre</b> → columna 8</div>
+          <div><b>Tipo ingreso</b> → columna 6</div>
+          <div><b>Ubicación / Sector</b> → columna 7</div>
+          <div><b>Cuota</b> → fija en 1</div>
+          <div><b>Puerta acceso</b> → no se usa</div>
+        </div>
+      </div>
+    </div>
+  );
+
+  const CardListado = () => (
+    <div style={S.sourceCard}>
+      <div style={S.sourceHeader}>
+        <div style={S.sourceTitle}>
+          <span style={S.icon}>📋</span>
+          <div>
+            <div style={S.sourceName}>Listado</div>
             <div style={S.sourceHint}>Cuota fija = 1 (al día)</div>
           </div>
         </div>
@@ -441,33 +539,33 @@ export default function AdminPage() {
           <label style={S.btnOutline}>
             Seleccionar CSV
             <input
-              ref={source === "venta" ? fileVe : fileLi}
+              ref={fileLi}
               type="file"
               accept=".csv,text/csv"
               style={{ display: "none" }}
               onChange={(e) => {
                 const f = e.target.files?.[0];
-                if (f) loadGeneric(f, source);
+                if (f) loadListado(f);
               }}
             />
           </label>
-          <button style={S.btnOutline} onClick={() => clearSource(source)}>Limpiar</button>
-          <button style={S.btnPrimary} onClick={() => importarFuente(source)}>Importar</button>
+          <button style={S.btnOutline} onClick={() => clearSource("listado")}>Limpiar</button>
+          <button style={S.btnPrimary} onClick={() => importarFuente("listado")}>Importar</button>
         </div>
       </div>
 
       <div style={S.sourceBody}>
         <div style={S.badges}>
-          <span style={S.badge}>Archivo: <b>{state.file ? state.file.name : "—"}</b></span>
-          <span style={S.badge}>Válidas: <b>{state.valid}</b></span>
+          <span style={S.badge}>Archivo: <b>{listado.file ? listado.file.name : "—"}</b></span>
+          <span style={S.badge}>Válidas: <b>{listado.valid}</b></span>
         </div>
 
-        {state.headers?.length ? (
+        {listado.headers?.length ? (
           <div style={S.mappingGrid}>
-            <MapSelect label="DNI" value={state.mapping.dni || ""} headers={state.headers} onChange={(v)=>updateMapping(source,"dni",v)} />
-            <MapSelect label="Nombre" value={state.mapping.nombre || ""} headers={state.headers} onChange={(v)=>updateMapping(source,"nombre",v)} />
-            <MapSelect label="Tipo ingreso" value={state.mapping.tipoIngreso || ""} headers={state.headers} onChange={(v)=>updateMapping(source,"tipoIngreso",v)} />
-            <MapSelect label="Ubicación" value={state.mapping.ubicacion || ""} headers={state.headers} onChange={(v)=>updateMapping(source,"ubicacion",v)} />
+            <MapSelect label="DNI" value={listado.mapping.dni || ""} headers={listado.headers} onChange={(v)=>updateMappingListado("dni",v)} />
+            <MapSelect label="Nombre" value={listado.mapping.nombre || ""} headers={listado.headers} onChange={(v)=>updateMappingListado("nombre",v)} />
+            <MapSelect label="Tipo ingreso" value={listado.mapping.tipoIngreso || ""} headers={listado.headers} onChange={(v)=>updateMappingListado("tipoIngreso",v)} />
+            <MapSelect label="Ubicación" value={listado.mapping.ubicacion || ""} headers={listado.headers} onChange={(v)=>updateMappingListado("ubicacion",v)} />
           </div>
         ) : (
           <div style={S.placeholder}>Cargá un CSV para ver el mapeo.</div>
@@ -522,8 +620,8 @@ export default function AdminPage() {
 
             <div style={S.grid}>
               <CardClever />
-              <CardGeneric title="Venta (Deportick)" icon="🧾" source="venta" state={venta} />
-              <CardGeneric title="Listado" icon="📋" source="listado" state={listado} />
+              <CardDeportick />
+              <CardListado />
             </div>
 
             <div style={S.footer}>Ruta: <b>/admin</b></div>
