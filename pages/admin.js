@@ -87,15 +87,18 @@ function parseGenericCSV(text) {
       i++;
       continue;
     }
+
     if (ch === '"') {
       inQuotes = !inQuotes;
       continue;
     }
+
     if (!inQuotes && ch === sep) {
       row.push(cur);
       cur = "";
       continue;
     }
+
     if (!inQuotes && (ch === "\n" || ch === "\r")) {
       if (ch === "\r" && next === "\n") i++;
       row.push(cur);
@@ -104,6 +107,7 @@ function parseGenericCSV(text) {
       cur = "";
       continue;
     }
+
     cur += ch;
   }
 
@@ -124,6 +128,33 @@ function parseGenericCSV(text) {
   };
 }
 
+function parseTipoIngresoMapCSV(text) {
+  const lines = text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+  const map = {};
+
+  for (const line of lines) {
+    const parts = line.split(",");
+    if (parts.length < 2) continue;
+
+    const nombre = String(parts[0] ?? "").trim();
+    const id = String(parts[1] ?? "").trim();
+
+    if (id) map[id] = nombre;
+  }
+
+  return map;
+}
+
+// CLEVER fijo:
+// col 3 = nombre
+// col 4 = dni
+// col 14 = nombre ubicación
+// col 16 = tipo ingreso
+// col 19 = cuota
 function parseCleverPersons(text) {
   const rows = parseSemicolonCSV(text);
   if (rows.length < 2) return { headers: [], items: [] };
@@ -133,15 +164,15 @@ function parseCleverPersons(text) {
 
   const items = [];
   for (const r of data) {
-    const dni = normalizeDni(r[3]);
+    const dni = normalizeDni(r[3]); // col 4
     if (!dni) continue;
 
     items.push({
       dni,
-      nombre: String(r[2] ?? "").trim(),
-      tipoIngreso: String(r[15] ?? "").trim(),
-      ubicacion: String(r[13] ?? "").trim(),
-      cuota: to01(r[18]),
+      nombre: String(r[2] ?? "").trim(),        // col 3
+      tipoIngreso: String(r[15] ?? "").trim(),  // col 16
+      ubicacion: String(r[13] ?? "").trim(),    // col 14
+      cuota: to01(r[18]),                       // col 19
     });
   }
 
@@ -154,18 +185,24 @@ function parseCleverPersons(text) {
   };
 }
 
+// DEPORTICK fijo:
+// col 1 = dni
+// col 8 = nombre
+// col 6 = tipo ingreso
+// col 7 = sector/ubicación
+// cuota = 1 fijo
 function parseDeportickPersonsFromRows(rows) {
   const items = [];
 
   for (const r of rows) {
-    const dni = normalizeDni(r[0]);
+    const dni = normalizeDni(r[0]); // col 1
     if (!dni) continue;
 
     items.push({
       dni,
-      nombre: String(r[7] ?? "").trim(),
-      tipoIngreso: String(r[5] ?? "").trim(),
-      ubicacion: String(r[6] ?? "").trim(),
+      nombre: String(r[7] ?? "").trim(),       // col 8
+      tipoIngreso: String(r[5] ?? "").trim(),  // col 6
+      ubicacion: String(r[6] ?? "").trim(),    // col 7
       cuota: 1,
     });
   }
@@ -176,49 +213,44 @@ function parseDeportickPersonsFromRows(rows) {
   return Array.from(map.values());
 }
 
-function guessMapping(headers) {
-  const norm = (h) => h.toLowerCase().replace(/\s+/g, "").replace(/_/g, "");
-  const find = (keys) => {
-    const idx = headers.findIndex((h) => keys.some((k) => norm(h).includes(k)));
-    return idx >= 0 ? headers[idx] : "";
-  };
+// LISTADO fijo:
+// col 3 = nombre
+// col 7 = dni
+// col 8 = id tipo ingreso
+// ubicacion = LIBRE
+// cuota = 1
+function parseListadoPersonsFixed(text, tiposIngresoMap) {
+  const { headers, rows } = parseGenericCSV(text);
+  if (!headers.length || !rows.length) return { headers: [], items: [] };
 
-  return {
-    dni: find(["dni", "documento", "doc"]),
-    nombre: find(["nombre", "apellidoynombre", "apellido"]),
-    tipoIngreso: find(["tipoingreso", "tipodeingreso", "tipo", "sector", "categoria"]),
-    ubicacion: find(["ubicacion", "ubicación", "sector", "lugar"]),
-  };
-}
+  const items = [];
 
-function buildPersonsFromMapping({ headers, rows, mapping }) {
-  const idx = (hname) => (hname ? headers.indexOf(hname) : -1);
-
-  const iDni = idx(mapping.dni);
-  const iNom = idx(mapping.nombre);
-  const iTip = idx(mapping.tipoIngreso);
-  const iUbi = idx(mapping.ubicacion);
-
-  const out = [];
   for (const r of rows) {
-    const dni = normalizeDni(iDni >= 0 ? r[iDni] : "");
+    const dni = normalizeDni(r[6]); // col 7
     if (!dni) continue;
 
-    out.push({
+    const idTipo = String(r[7] ?? "").trim(); // col 8
+
+    items.push({
       dni,
-      nombre: iNom >= 0 ? String(r[iNom] ?? "").trim() : "",
-      tipoIngreso: iTip >= 0 ? String(r[iTip] ?? "").trim() : "",
-      ubicacion: iUbi >= 0 ? String(r[iUbi] ?? "").trim() : "",
+      nombre: String(r[2] ?? "").trim(),      // col 3
+      tipoIngreso: tiposIngresoMap[idTipo] || `ID ${idTipo}`,
+      ubicacion: "LIBRE",
       cuota: 1,
     });
   }
 
   const map = new Map();
-  for (const p of out) map.set(p.dni, p);
-  return Array.from(map.values());
+  for (const p of items) map.set(p.dni, p);
+
+  return {
+    headers,
+    items: Array.from(map.values()),
+  };
 }
 
 export default function AdminPage() {
+  const fileMaster = useRef(null);
   const fileAb = useRef(null);
   const fileVe = useRef(null);
   const fileLi = useRef(null);
@@ -227,9 +259,12 @@ export default function AdminPage() {
   const [logged, setLogged] = useState(false);
   const [mode, setMode] = useState("NUEVO");
 
+  const [tiposIngresoMap, setTiposIngresoMap] = useState({});
+  const [tiposIngresoFile, setTiposIngresoFile] = useState(null);
+
   const [abonados, setAbonados] = useState({ file: null, headers: [], items: [], valid: 0 });
   const [venta, setVenta] = useState({ file: null, headers: [], items: [], valid: 0 });
-  const [listado, setListado] = useState({ file: null, headers: [], rows: [], mapping: {}, items: [], valid: 0 });
+  const [listado, setListado] = useState({ file: null, headers: [], items: [], valid: 0 });
 
   const [stats, setStats] = useState({
     personas: 0,
@@ -280,6 +315,15 @@ export default function AdminPage() {
     } catch {}
   }
 
+  async function loadTiposIngresoMaster(file) {
+    const text = await file.text();
+    const map = parseTipoIngresoMapCSV(text);
+    setTiposIngresoMap(map);
+    setTiposIngresoFile(file);
+    setStatusMsg(`Maestro de tipos cargado: ${file.name} — IDs: ${Object.keys(map).length}`);
+    setErrorMsg("");
+  }
+
   async function loadClever(file) {
     const text = await file.text();
     const { headers, items } = parseCleverPersons(text);
@@ -326,20 +370,17 @@ export default function AdminPage() {
   }
 
   async function loadListado(file) {
+    if (!Object.keys(tiposIngresoMap).length) {
+      setErrorMsg("Primero cargá el archivo maestro de tipos de ingreso.");
+      return;
+    }
+
     const text = await file.text();
-    const { headers, rows } = parseGenericCSV(text);
-    const mapping = guessMapping(headers);
-    const items = buildPersonsFromMapping({
-      headers,
-      rows,
-      mapping,
-    });
+    const { headers, items } = parseListadoPersonsFixed(text, tiposIngresoMap);
 
     setListado({
       file,
       headers,
-      rows,
-      mapping,
       items,
       valid: items.length,
     });
@@ -348,23 +389,12 @@ export default function AdminPage() {
     setErrorMsg("");
   }
 
-  function updateMappingListado(key, value) {
-    const mapping = { ...listado.mapping, [key]: value };
-    const items = buildPersonsFromMapping({
-      headers: listado.headers,
-      rows: listado.rows,
-      mapping,
-    });
-
-    setListado((prev) => ({
-      ...prev,
-      mapping,
-      items,
-      valid: items.length,
-    }));
-  }
-
   function clearSource(source) {
+    if (source === "maestro") {
+      setTiposIngresoMap({});
+      setTiposIngresoFile(null);
+      if (fileMaster.current) fileMaster.current.value = "";
+    }
     if (source === "abonados") {
       setAbonados({ file: null, headers: [], items: [], valid: 0 });
       if (fileAb.current) fileAb.current.value = "";
@@ -374,7 +404,7 @@ export default function AdminPage() {
       if (fileVe.current) fileVe.current.value = "";
     }
     if (source === "listado") {
-      setListado({ file: null, headers: [], rows: [], mapping: {}, items: [], valid: 0 });
+      setListado({ file: null, headers: [], items: [], valid: 0 });
       if (fileLi.current) fileLi.current.value = "";
     }
   }
@@ -481,128 +511,6 @@ export default function AdminPage() {
     </div>
   );
 
-  const CardClever = () => (
-    <div style={S.sourceCard}>
-      <div style={S.sourceHeader}>
-        <div style={S.sourceTitle}>
-          <span style={S.icon}>🎟️</span>
-          <div>
-            <div style={S.sourceName}>Abonados (Cleversoft)</div>
-            <div style={S.sourceHint}>Toma el archivo tal cual viene, sin modificarlo.</div>
-          </div>
-        </div>
-        <div style={S.sourceActions}>
-          <label style={S.btnOutline}>
-            Seleccionar CSV
-            <input ref={fileAb} type="file" accept=".csv,text/csv" style={{ display: "none" }} onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) loadClever(f);
-            }} />
-          </label>
-          <button style={S.btnOutline} onClick={() => clearSource("abonados")}>Limpiar</button>
-          <button style={S.btnPrimary} onClick={() => importarFuente("abonados")}>Importar</button>
-        </div>
-      </div>
-
-      <div style={S.badges}>
-        <span style={S.badge}>Archivo: <b>{abonados.file ? abonados.file.name : "—"}</b></span>
-        <span style={S.badge}>Cargados en panel: <b>{abonados.valid}</b></span>
-        <span style={S.badge}>Fuente en base: <b>{stats.abonados}</b></span>
-      </div>
-
-      <div style={S.fixedMap}>
-        <div><b>DNI</b> → columna 4</div>
-        <div><b>Nombre</b> → columna 3</div>
-        <div><b>Tipo ingreso</b> → columna 16</div>
-        <div><b>Ubicación</b> → columna 14</div>
-        <div><b>Cuota</b> → columna 19</div>
-        <div><b>Puerta acceso</b> → no se usa</div>
-      </div>
-    </div>
-  );
-
-  const CardDeportick = () => (
-    <div style={S.sourceCard}>
-      <div style={S.sourceHeader}>
-        <div style={S.sourceTitle}>
-          <span style={S.icon}>🧾</span>
-          <div>
-            <div style={S.sourceName}>Venta (Deportick)</div>
-            <div style={S.sourceHint}>Todos quedan habilitados. Toma el archivo automáticamente.</div>
-          </div>
-        </div>
-        <div style={S.sourceActions}>
-          <label style={S.btnOutline}>
-            Seleccionar archivo
-            <input ref={fileVe} type="file" accept=".csv,text/csv,.xlsx,.xls" style={{ display: "none" }} onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) loadDeportick(f);
-            }} />
-          </label>
-          <button style={S.btnOutline} onClick={() => clearSource("venta")}>Limpiar</button>
-          <button style={S.btnPrimary} onClick={() => importarFuente("venta")}>Importar</button>
-        </div>
-      </div>
-
-      <div style={S.badges}>
-        <span style={S.badge}>Archivo: <b>{venta.file ? venta.file.name : "—"}</b></span>
-        <span style={S.badge}>Cargados en panel: <b>{venta.valid}</b></span>
-        <span style={S.badge}>Fuente en base: <b>{stats.venta}</b></span>
-      </div>
-
-      <div style={S.fixedMap}>
-        <div><b>DNI</b> → columna 1</div>
-        <div><b>Nombre</b> → columna 8</div>
-        <div><b>Tipo ingreso</b> → columna 6</div>
-        <div><b>Ubicación / Sector</b> → columna 7</div>
-        <div><b>Cuota</b> → fija en 1</div>
-        <div><b>Puerta acceso</b> → no se usa</div>
-      </div>
-    </div>
-  );
-
-  const CardListado = () => (
-    <div style={S.sourceCard}>
-      <div style={S.sourceHeader}>
-        <div style={S.sourceTitle}>
-          <span style={S.icon}>📋</span>
-          <div>
-            <div style={S.sourceName}>Listado</div>
-            <div style={S.sourceHint}>Cuota fija = 1 (al día)</div>
-          </div>
-        </div>
-        <div style={S.sourceActions}>
-          <label style={S.btnOutline}>
-            Seleccionar CSV
-            <input ref={fileLi} type="file" accept=".csv,text/csv" style={{ display: "none" }} onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) loadListado(f);
-            }} />
-          </label>
-          <button style={S.btnOutline} onClick={() => clearSource("listado")}>Limpiar</button>
-          <button style={S.btnPrimary} onClick={() => importarFuente("listado")}>Importar</button>
-        </div>
-      </div>
-
-      <div style={S.badges}>
-        <span style={S.badge}>Archivo: <b>{listado.file ? listado.file.name : "—"}</b></span>
-        <span style={S.badge}>Cargados en panel: <b>{listado.valid}</b></span>
-        <span style={S.badge}>Fuente en base: <b>{stats.listado}</b></span>
-      </div>
-
-      {listado.headers?.length ? (
-        <div style={S.mappingGrid}>
-          <MapSelect label="DNI" value={listado.mapping.dni || ""} headers={listado.headers} onChange={(v)=>updateMappingListado("dni",v)} />
-          <MapSelect label="Nombre" value={listado.mapping.nombre || ""} headers={listado.headers} onChange={(v)=>updateMappingListado("nombre",v)} />
-          <MapSelect label="Tipo ingreso" value={listado.mapping.tipoIngreso || ""} headers={listado.headers} onChange={(v)=>updateMappingListado("tipoIngreso",v)} />
-          <MapSelect label="Ubicación" value={listado.mapping.ubicacion || ""} headers={listado.headers} onChange={(v)=>updateMappingListado("ubicacion",v)} />
-        </div>
-      ) : (
-        <div style={S.placeholder}>Cargá un CSV para ver el mapeo.</div>
-      )}
-    </div>
-  );
-
   return (
     <div style={S.page}>
       <div style={S.cardWide}>
@@ -666,29 +574,175 @@ export default function AdminPage() {
             </div>
 
             <div style={S.grid}>
-              <CardClever />
-              <CardDeportick />
-              <CardListado />
+              <div style={S.sourceCard}>
+                <div style={S.sourceHeader}>
+                  <div style={S.sourceTitle}>
+                    <span style={S.icon}>🧩</span>
+                    <div>
+                      <div style={S.sourceName}>Maestro tipo de ingreso</div>
+                      <div style={S.sourceHint}>Archivo de equivalencias ID → nombre</div>
+                    </div>
+                  </div>
+                  <div style={S.sourceActions}>
+                    <label style={S.btnOutline}>
+                      Seleccionar CSV
+                      <input
+                        ref={fileMaster}
+                        type="file"
+                        accept=".csv,text/csv"
+                        style={{ display: "none" }}
+                        onChange={(e) => {
+                          const f = e.target.files?.[0];
+                          if (f) loadTiposIngresoMaster(f);
+                        }}
+                      />
+                    </label>
+                    <button style={S.btnOutline} onClick={() => clearSource("maestro")}>Limpiar</button>
+                  </div>
+                </div>
+                <div style={S.badges}>
+                  <span style={S.badge}>Archivo: <b>{tiposIngresoFile ? tiposIngresoFile.name : "—"}</b></span>
+                  <span style={S.badge}>IDs cargados: <b>{Object.keys(tiposIngresoMap).length}</b></span>
+                </div>
+              </div>
+
+              <div style={S.sourceCard}>
+                <div style={S.sourceHeader}>
+                  <div style={S.sourceTitle}>
+                    <span style={S.icon}>🎟️</span>
+                    <div>
+                      <div style={S.sourceName}>Abonados (Cleversoft)</div>
+                      <div style={S.sourceHint}>Toma el archivo tal cual viene, sin modificarlo.</div>
+                    </div>
+                  </div>
+                  <div style={S.sourceActions}>
+                    <label style={S.btnOutline}>
+                      Seleccionar CSV
+                      <input
+                        ref={fileAb}
+                        type="file"
+                        accept=".csv,text/csv"
+                        style={{ display: "none" }}
+                        onChange={(e) => {
+                          const f = e.target.files?.[0];
+                          if (f) loadClever(f);
+                        }}
+                      />
+                    </label>
+                    <button style={S.btnOutline} onClick={() => clearSource("abonados")}>Limpiar</button>
+                    <button style={S.btnPrimary} onClick={() => importarFuente("abonados")}>Importar</button>
+                  </div>
+                </div>
+
+                <div style={S.badges}>
+                  <span style={S.badge}>Archivo: <b>{abonados.file ? abonados.file.name : "—"}</b></span>
+                  <span style={S.badge}>Cargados en panel: <b>{abonados.valid}</b></span>
+                  <span style={S.badge}>Fuente en base: <b>{stats.abonados}</b></span>
+                </div>
+
+                <div style={S.fixedMap}>
+                  <div><b>DNI</b> → columna 4</div>
+                  <div><b>Nombre</b> → columna 3</div>
+                  <div><b>Tipo ingreso</b> → columna 16</div>
+                  <div><b>Ubicación</b> → columna 14</div>
+                  <div><b>Cuota</b> → columna 19</div>
+                  <div><b>Puerta acceso</b> → no se usa</div>
+                </div>
+              </div>
+
+              <div style={S.sourceCard}>
+                <div style={S.sourceHeader}>
+                  <div style={S.sourceTitle}>
+                    <span style={S.icon}>🧾</span>
+                    <div>
+                      <div style={S.sourceName}>Venta (Deportick)</div>
+                      <div style={S.sourceHint}>Todos quedan habilitados. Toma el archivo automáticamente.</div>
+                    </div>
+                  </div>
+                  <div style={S.sourceActions}>
+                    <label style={S.btnOutline}>
+                      Seleccionar archivo
+                      <input
+                        ref={fileVe}
+                        type="file"
+                        accept=".csv,text/csv,.xlsx,.xls"
+                        style={{ display: "none" }}
+                        onChange={(e) => {
+                          const f = e.target.files?.[0];
+                          if (f) loadDeportick(f);
+                        }}
+                      />
+                    </label>
+                    <button style={S.btnOutline} onClick={() => clearSource("venta")}>Limpiar</button>
+                    <button style={S.btnPrimary} onClick={() => importarFuente("venta")}>Importar</button>
+                  </div>
+                </div>
+
+                <div style={S.badges}>
+                  <span style={S.badge}>Archivo: <b>{venta.file ? venta.file.name : "—"}</b></span>
+                  <span style={S.badge}>Cargados en panel: <b>{venta.valid}</b></span>
+                  <span style={S.badge}>Fuente en base: <b>{stats.venta}</b></span>
+                </div>
+
+                <div style={S.fixedMap}>
+                  <div><b>DNI</b> → columna 1</div>
+                  <div><b>Nombre</b> → columna 8</div>
+                  <div><b>Tipo ingreso</b> → columna 6</div>
+                  <div><b>Ubicación / Sector</b> → columna 7</div>
+                  <div><b>Cuota</b> → fija en 1</div>
+                  <div><b>Puerta acceso</b> → no se usa</div>
+                </div>
+              </div>
+
+              <div style={S.sourceCard}>
+                <div style={S.sourceHeader}>
+                  <div style={S.sourceTitle}>
+                    <span style={S.icon}>📋</span>
+                    <div>
+                      <div style={S.sourceName}>Listado</div>
+                      <div style={S.sourceHint}>Tipo ingreso por maestro, ubicación = LIBRE, cuota = 1.</div>
+                    </div>
+                  </div>
+                  <div style={S.sourceActions}>
+                    <label style={S.btnOutline}>
+                      Seleccionar CSV
+                      <input
+                        ref={fileLi}
+                        type="file"
+                        accept=".csv,text/csv"
+                        style={{ display: "none" }}
+                        onChange={(e) => {
+                          const f = e.target.files?.[0];
+                          if (f) loadListado(f);
+                        }}
+                      />
+                    </label>
+                    <button style={S.btnOutline} onClick={() => clearSource("listado")}>Limpiar</button>
+                    <button style={S.btnPrimary} onClick={() => importarFuente("listado")}>Importar</button>
+                  </div>
+                </div>
+
+                <div style={S.badges}>
+                  <span style={S.badge}>Archivo: <b>{listado.file ? listado.file.name : "—"}</b></span>
+                  <span style={S.badge}>Cargados en panel: <b>{listado.valid}</b></span>
+                  <span style={S.badge}>Fuente en base: <b>{stats.listado}</b></span>
+                </div>
+
+                <div style={S.fixedMap}>
+                  <div><b>DNI</b> → columna 7</div>
+                  <div><b>Nombre</b> → columna 3</div>
+                  <div><b>ID tipo ingreso</b> → columna 8</div>
+                  <div><b>Tipo ingreso</b> → desde maestro</div>
+                  <div><b>Ubicación</b> → LIBRE</div>
+                  <div><b>Cuota</b> → fija en 1</div>
+                </div>
+              </div>
             </div>
 
             <div style={S.footer}>Ruta: <b>/admin</b></div>
           </>
         )}
       </div>
-    </div>
-  );
-}
-
-function MapSelect({ label, value, headers, onChange }) {
-  return (
-    <div style={S.mapBox}>
-      <div style={S.mapLabel}>{label}</div>
-      <select style={S.select} value={value} onChange={(e) => onChange(e.target.value)}>
-        <option value="">— (sin usar)</option>
-        {headers.map((h) => (
-          <option key={h} value={h}>{h}</option>
-        ))}
-      </select>
     </div>
   );
 }
@@ -769,10 +823,6 @@ const S = {
   badge: { background: "#fff", border: "1px solid #d7e6ff", padding: "6px 10px", borderRadius: 999, fontSize: 13 },
 
   fixedMap: { marginTop: 10, display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8, fontWeight: 700 },
-  mappingGrid: { marginTop: 10, display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 10 },
-  mapBox: { background: "#fff", border: "1px solid #d7e6ff", borderRadius: 14, padding: 10 },
-  mapLabel: { fontWeight: 900, fontSize: 12, marginBottom: 6, color: "#0b4aa8" },
 
-  placeholder: { marginTop: 10, padding: 12, borderRadius: 14, border: "1px dashed #cfd8e3", color: "#555", background: "#fff" },
   footer: { marginTop: 12, fontSize: 13, color: "#333" },
 };
