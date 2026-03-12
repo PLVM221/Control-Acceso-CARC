@@ -124,12 +124,6 @@ function parseGenericCSV(text) {
   };
 }
 
-// CLEVER fijo:
-// col 3 = nombre
-// col 4 = dni
-// col 14 = nombre ubicación
-// col 16 = tipo ingreso
-// col 19 = cuota
 function parseCleverPersons(text) {
   const rows = parseSemicolonCSV(text);
   if (rows.length < 2) return { headers: [], items: [] };
@@ -139,15 +133,15 @@ function parseCleverPersons(text) {
 
   const items = [];
   for (const r of data) {
-    const dni = normalizeDni(r[3]); // col 4
+    const dni = normalizeDni(r[3]);
     if (!dni) continue;
 
     items.push({
       dni,
-      nombre: String(r[2] ?? "").trim(),        // col 3
-      tipoIngreso: String(r[15] ?? "").trim(),  // col 16
-      ubicacion: String(r[13] ?? "").trim(),    // col 14
-      cuota: to01(r[18]),                       // col 19
+      nombre: String(r[2] ?? "").trim(),
+      tipoIngreso: String(r[15] ?? "").trim(),
+      ubicacion: String(r[13] ?? "").trim(),
+      cuota: to01(r[18]),
     });
   }
 
@@ -160,26 +154,18 @@ function parseCleverPersons(text) {
   };
 }
 
-// DEPORTICK fijo:
-// col 1 = dni
-// col 8 = nombre
-// col 6 = tipo ingreso
-// col 7 = sector/ubicación
-// cuota = 1 fijo
-function parseDeportickPersons(text) {
-  const { headers, rows } = parseGenericCSV(text);
-  if (!headers.length || !rows.length) return { headers: [], items: [] };
-
+function parseDeportickPersonsFromRows(rows) {
   const items = [];
+
   for (const r of rows) {
-    const dni = normalizeDni(r[0]); // col 1
+    const dni = normalizeDni(r[0]);
     if (!dni) continue;
 
     items.push({
       dni,
-      nombre: String(r[7] ?? "").trim(),       // col 8
-      tipoIngreso: String(r[5] ?? "").trim(),  // col 6
-      ubicacion: String(r[6] ?? "").trim(),    // col 7
+      nombre: String(r[7] ?? "").trim(),
+      tipoIngreso: String(r[5] ?? "").trim(),
+      ubicacion: String(r[6] ?? "").trim(),
       cuota: 1,
     });
   }
@@ -187,10 +173,7 @@ function parseDeportickPersons(text) {
   const map = new Map();
   for (const p of items) map.set(p.dni, p);
 
-  return {
-    headers,
-    items: Array.from(map.values()),
-  };
+  return Array.from(map.values());
 }
 
 function guessMapping(headers) {
@@ -208,7 +191,7 @@ function guessMapping(headers) {
   };
 }
 
-function buildPersonsFromMapping({ headers, rows, mapping, cuotaFija1 }) {
+function buildPersonsFromMapping({ headers, rows, mapping }) {
   const idx = (hname) => (hname ? headers.indexOf(hname) : -1);
 
   const iDni = idx(mapping.dni);
@@ -226,7 +209,7 @@ function buildPersonsFromMapping({ headers, rows, mapping, cuotaFija1 }) {
       nombre: iNom >= 0 ? String(r[iNom] ?? "").trim() : "",
       tipoIngreso: iTip >= 0 ? String(r[iTip] ?? "").trim() : "",
       ubicacion: iUbi >= 0 ? String(r[iUbi] ?? "").trim() : "",
-      cuota: cuotaFija1 ? 1 : 1,
+      cuota: 1,
     });
   }
 
@@ -248,6 +231,17 @@ export default function AdminPage() {
   const [venta, setVenta] = useState({ file: null, headers: [], items: [], valid: 0 });
   const [listado, setListado] = useState({ file: null, headers: [], rows: [], mapping: {}, items: [], valid: 0 });
 
+  const [stats, setStats] = useState({
+    personas: 0,
+    fuentes: 0,
+    cuotaDia: 0,
+    deuda: 0,
+    abonados: 0,
+    venta: 0,
+    listado: 0,
+    ultimaActualizacion: null,
+  });
+
   const [statusMsg, setStatusMsg] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
   const [progress, setProgress] = useState(null);
@@ -257,6 +251,7 @@ export default function AdminPage() {
     if (!password.trim()) return setErrorMsg("Ingresá la contraseña.");
     setLogged(true);
     setStatusMsg("Logueado ✅");
+    loadStats();
   }
 
   function logout() {
@@ -275,6 +270,16 @@ export default function AdminPage() {
     return () => window.removeEventListener("keydown", onKey);
   }, [logged, password]);
 
+  async function loadStats() {
+    try {
+      const res = await fetch("/api/admin/stats");
+      const data = await res.json();
+      if (res.ok && data.ok) {
+        setStats(data.stats);
+      }
+    } catch {}
+  }
+
   async function loadClever(file) {
     const text = await file.text();
     const { headers, items } = parseCleverPersons(text);
@@ -291,61 +296,34 @@ export default function AdminPage() {
   }
 
   async function loadDeportick(file) {
+    let rows = [];
 
-  let rows = [];
+    if (file.name.endsWith(".xlsx") || file.name.endsWith(".xls")) {
+      const data = await file.arrayBuffer();
+      const workbook = XLSX.read(data);
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      rows = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+    } else {
+      const text = await file.text();
+      const parsed = parseGenericCSV(text);
+      rows = [parsed.headers, ...parsed.rows];
+    }
 
-  if (file.name.endsWith(".xlsx") || file.name.endsWith(".xls")) {
+    if (rows.length < 2) return;
 
-    const data = await file.arrayBuffer();
-    const workbook = XLSX.read(data);
+    const dataRows = rows.slice(1);
+    const items = parseDeportickPersonsFromRows(dataRows);
 
-    const sheet = workbook.Sheets[workbook.SheetNames[0]];
-    rows = XLSX.utils.sheet_to_json(sheet, { header: 1 });
-
-  } else {
-
-    const text = await file.text();
-    const parsed = parseGenericCSV(text);
-    rows = [parsed.headers, ...parsed.rows];
-
-  }
-
-  if (rows.length < 2) return;
-
-  const dataRows = rows.slice(1);
-
-  const items = [];
-
-  for (const r of dataRows) {
-
-    const dni = normalizeDni(r[0]); // columna 1
-    if (!dni) continue;
-
-    items.push({
-      dni,
-      nombre: String(r[7] ?? "").trim(),       // columna 8
-      tipoIngreso: String(r[5] ?? "").trim(),  // columna 6
-      ubicacion: String(r[6] ?? "").trim(),    // columna 7
-      cuota: 1
+    setVenta({
+      file,
+      headers: rows[0] || [],
+      items,
+      valid: items.length,
     });
 
+    setStatusMsg(`Deportick cargado: ${file.name} — Válidas: ${items.length}`);
+    setErrorMsg("");
   }
-
-  const map = new Map();
-  for (const p of items) map.set(p.dni, p);
-
-  const final = Array.from(map.values());
-
-  setVenta({
-    file,
-    headers: [],
-    items: final,
-    valid: final.length
-  });
-
-  setStatusMsg(`Deportick cargado: ${file.name} — Válidas: ${final.length}`);
-  setErrorMsg("");
-}
 
   async function loadListado(file) {
     const text = await file.text();
@@ -355,7 +333,6 @@ export default function AdminPage() {
       headers,
       rows,
       mapping,
-      cuotaFija1: true,
     });
 
     setListado({
@@ -377,7 +354,6 @@ export default function AdminPage() {
       headers: listado.headers,
       rows: listado.rows,
       mapping,
-      cuotaFija1: true,
     });
 
     setListado((prev) => ({
@@ -406,9 +382,7 @@ export default function AdminPage() {
   async function postImport({ source, clear, persons }) {
     const res = await fetch("/api/admin/importar", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         password,
         mode,
@@ -466,10 +440,46 @@ export default function AdminPage() {
       }
 
       setStatusMsg(`✅ Importación OK: ${source} — ${st.items.length} registros`);
+      await loadStats();
     } catch (e) {
       setErrorMsg(e.message || String(e));
     }
   }
+
+  async function borrarTodaBase() {
+    const ok = confirm("¿Seguro que querés borrar TODA la base de accesos?");
+    if (!ok) return;
+
+    setErrorMsg("");
+    setStatusMsg("");
+
+    try {
+      const res = await fetch("/api/admin/clear-all", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.detail || data.error || "No se pudo borrar la base");
+      }
+
+      setStatusMsg("✅ Base completa borrada");
+      await loadStats();
+    } catch (e) {
+      setErrorMsg(e.message || String(e));
+    }
+  }
+
+  const CardInfo = ({ title, value, subtitle }) => (
+    <div style={S.statCard}>
+      <div style={S.statTitle}>{title}</div>
+      <div style={S.statValue}>{value}</div>
+      <div style={S.statSub}>{subtitle}</div>
+    </div>
+  );
 
   const CardClever = () => (
     <div style={S.sourceCard}>
@@ -481,40 +491,32 @@ export default function AdminPage() {
             <div style={S.sourceHint}>Toma el archivo tal cual viene, sin modificarlo.</div>
           </div>
         </div>
-
         <div style={S.sourceActions}>
           <label style={S.btnOutline}>
             Seleccionar CSV
-            <input
-              ref={fileAb}
-              type="file"
-              accept=".csv,text/csv"
-              style={{ display: "none" }}
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) loadClever(f);
-              }}
-            />
+            <input ref={fileAb} type="file" accept=".csv,text/csv" style={{ display: "none" }} onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) loadClever(f);
+            }} />
           </label>
           <button style={S.btnOutline} onClick={() => clearSource("abonados")}>Limpiar</button>
           <button style={S.btnPrimary} onClick={() => importarFuente("abonados")}>Importar</button>
         </div>
       </div>
 
-      <div style={S.sourceBody}>
-        <div style={S.badges}>
-          <span style={S.badge}>Archivo: <b>{abonados.file ? abonados.file.name : "—"}</b></span>
-          <span style={S.badge}>Válidas: <b>{abonados.valid}</b></span>
-        </div>
+      <div style={S.badges}>
+        <span style={S.badge}>Archivo: <b>{abonados.file ? abonados.file.name : "—"}</b></span>
+        <span style={S.badge}>Cargados en panel: <b>{abonados.valid}</b></span>
+        <span style={S.badge}>Fuente en base: <b>{stats.abonados}</b></span>
+      </div>
 
-        <div style={S.fixedMap}>
-          <div><b>DNI</b> → columna 4</div>
-          <div><b>Nombre</b> → columna 3</div>
-          <div><b>Tipo ingreso</b> → columna 16</div>
-          <div><b>Ubicación</b> → columna 14</div>
-          <div><b>Cuota</b> → columna 19</div>
-          <div><b>Puerta acceso</b> → no se usa</div>
-        </div>
+      <div style={S.fixedMap}>
+        <div><b>DNI</b> → columna 4</div>
+        <div><b>Nombre</b> → columna 3</div>
+        <div><b>Tipo ingreso</b> → columna 16</div>
+        <div><b>Ubicación</b> → columna 14</div>
+        <div><b>Cuota</b> → columna 19</div>
+        <div><b>Puerta acceso</b> → no se usa</div>
       </div>
     </div>
   );
@@ -529,40 +531,32 @@ export default function AdminPage() {
             <div style={S.sourceHint}>Todos quedan habilitados. Toma el archivo automáticamente.</div>
           </div>
         </div>
-
         <div style={S.sourceActions}>
           <label style={S.btnOutline}>
-            Seleccionar CSV
-            <input
-              ref={fileVe}
-              type="file"
-              accept=".csv,text/csv,.xlsx,.xls"
-              style={{ display: "none" }}
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) loadDeportick(f);
-              }}
-            />
+            Seleccionar archivo
+            <input ref={fileVe} type="file" accept=".csv,text/csv,.xlsx,.xls" style={{ display: "none" }} onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) loadDeportick(f);
+            }} />
           </label>
           <button style={S.btnOutline} onClick={() => clearSource("venta")}>Limpiar</button>
           <button style={S.btnPrimary} onClick={() => importarFuente("venta")}>Importar</button>
         </div>
       </div>
 
-      <div style={S.sourceBody}>
-        <div style={S.badges}>
-          <span style={S.badge}>Archivo: <b>{venta.file ? venta.file.name : "—"}</b></span>
-          <span style={S.badge}>Válidas: <b>{venta.valid}</b></span>
-        </div>
+      <div style={S.badges}>
+        <span style={S.badge}>Archivo: <b>{venta.file ? venta.file.name : "—"}</b></span>
+        <span style={S.badge}>Cargados en panel: <b>{venta.valid}</b></span>
+        <span style={S.badge}>Fuente en base: <b>{stats.venta}</b></span>
+      </div>
 
-        <div style={S.fixedMap}>
-          <div><b>DNI</b> → columna 1</div>
-          <div><b>Nombre</b> → columna 8</div>
-          <div><b>Tipo ingreso</b> → columna 6</div>
-          <div><b>Ubicación / Sector</b> → columna 7</div>
-          <div><b>Cuota</b> → fija en 1</div>
-          <div><b>Puerta acceso</b> → no se usa</div>
-        </div>
+      <div style={S.fixedMap}>
+        <div><b>DNI</b> → columna 1</div>
+        <div><b>Nombre</b> → columna 8</div>
+        <div><b>Tipo ingreso</b> → columna 6</div>
+        <div><b>Ubicación / Sector</b> → columna 7</div>
+        <div><b>Cuota</b> → fija en 1</div>
+        <div><b>Puerta acceso</b> → no se usa</div>
       </div>
     </div>
   );
@@ -577,43 +571,35 @@ export default function AdminPage() {
             <div style={S.sourceHint}>Cuota fija = 1 (al día)</div>
           </div>
         </div>
-
         <div style={S.sourceActions}>
           <label style={S.btnOutline}>
             Seleccionar CSV
-            <input
-              ref={fileLi}
-              type="file"
-              accept=".csv,text/csv"
-              style={{ display: "none" }}
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) loadListado(f);
-              }}
-            />
+            <input ref={fileLi} type="file" accept=".csv,text/csv" style={{ display: "none" }} onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) loadListado(f);
+            }} />
           </label>
           <button style={S.btnOutline} onClick={() => clearSource("listado")}>Limpiar</button>
           <button style={S.btnPrimary} onClick={() => importarFuente("listado")}>Importar</button>
         </div>
       </div>
 
-      <div style={S.sourceBody}>
-        <div style={S.badges}>
-          <span style={S.badge}>Archivo: <b>{listado.file ? listado.file.name : "—"}</b></span>
-          <span style={S.badge}>Válidas: <b>{listado.valid}</b></span>
-        </div>
-
-        {listado.headers?.length ? (
-          <div style={S.mappingGrid}>
-            <MapSelect label="DNI" value={listado.mapping.dni || ""} headers={listado.headers} onChange={(v)=>updateMappingListado("dni",v)} />
-            <MapSelect label="Nombre" value={listado.mapping.nombre || ""} headers={listado.headers} onChange={(v)=>updateMappingListado("nombre",v)} />
-            <MapSelect label="Tipo ingreso" value={listado.mapping.tipoIngreso || ""} headers={listado.headers} onChange={(v)=>updateMappingListado("tipoIngreso",v)} />
-            <MapSelect label="Ubicación" value={listado.mapping.ubicacion || ""} headers={listado.headers} onChange={(v)=>updateMappingListado("ubicacion",v)} />
-          </div>
-        ) : (
-          <div style={S.placeholder}>Cargá un CSV para ver el mapeo.</div>
-        )}
+      <div style={S.badges}>
+        <span style={S.badge}>Archivo: <b>{listado.file ? listado.file.name : "—"}</b></span>
+        <span style={S.badge}>Cargados en panel: <b>{listado.valid}</b></span>
+        <span style={S.badge}>Fuente en base: <b>{stats.listado}</b></span>
       </div>
+
+      {listado.headers?.length ? (
+        <div style={S.mappingGrid}>
+          <MapSelect label="DNI" value={listado.mapping.dni || ""} headers={listado.headers} onChange={(v)=>updateMappingListado("dni",v)} />
+          <MapSelect label="Nombre" value={listado.mapping.nombre || ""} headers={listado.headers} onChange={(v)=>updateMappingListado("nombre",v)} />
+          <MapSelect label="Tipo ingreso" value={listado.mapping.tipoIngreso || ""} headers={listado.headers} onChange={(v)=>updateMappingListado("tipoIngreso",v)} />
+          <MapSelect label="Ubicación" value={listado.mapping.ubicacion || ""} headers={listado.headers} onChange={(v)=>updateMappingListado("ubicacion",v)} />
+        </div>
+      ) : (
+        <div style={S.placeholder}>Cargá un CSV para ver el mapeo.</div>
+      )}
     </div>
   );
 
@@ -650,6 +636,9 @@ export default function AdminPage() {
                 <option value="NUEVO">NUEVO (borra y carga de cero)</option>
                 <option value="AGREGAR">AGREGAR (no borra, actualiza por DNI)</option>
               </select>
+
+              <button style={S.btnOutline} onClick={loadStats}>Refrescar estadísticas</button>
+              <button style={S.btnDanger} onClick={borrarTodaBase}>Borrar toda la base</button>
             </div>
 
             {progress ? (
@@ -660,6 +649,21 @@ export default function AdminPage() {
 
             {errorMsg ? <div style={S.err}>❌ {errorMsg}</div> : null}
             {statusMsg ? <div style={S.ok}>✅ {statusMsg}</div> : null}
+
+            <div style={S.statsGrid}>
+              <CardInfo title="Personas en base" value={stats.personas} subtitle="Tabla personas" />
+              <CardInfo title="Fuentes cargadas" value={stats.fuentes} subtitle="Tabla persona_fuentes" />
+              <CardInfo title="Cuota al día" value={stats.cuotaDia} subtitle="Acceso habilitado" />
+              <CardInfo title="Debe cuota" value={stats.deuda} subtitle="Acceso con deuda" />
+              <CardInfo title="Abonados" value={stats.abonados} subtitle="Fuente Clever" />
+              <CardInfo title="Deportick" value={stats.venta} subtitle="Fuente venta" />
+              <CardInfo title="Listado" value={stats.listado} subtitle="Fuente manual/listado" />
+              <CardInfo
+                title="Última actualización"
+                value={stats.ultimaActualizacion ? new Date(stats.ultimaActualizacion).toLocaleString("es-AR") : "—"}
+                subtitle="Último cambio en personas"
+              />
+            </div>
 
             <div style={S.grid}>
               <CardClever />
@@ -698,7 +702,7 @@ const S = {
       'Lexend, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, sans-serif',
   },
   cardWide: {
-    maxWidth: 1150,
+    maxWidth: 1200,
     margin: "0 auto",
     background: "#fff",
     borderRadius: 24,
@@ -716,6 +720,7 @@ const S = {
   btnPrimary: { border: "none", background: "#0b4aa8", color: "#fff", padding: "12px 16px", borderRadius: 12, fontWeight: 900, cursor: "pointer" },
   btnOutline: { border: "2px solid #0b4aa8", background: "#fff", color: "#0b4aa8", padding: "10px 14px", borderRadius: 12, fontWeight: 900, cursor: "pointer" },
   btnGhost: { border: "1px solid #cfd8e3", background: "#f7f9fc", padding: "10px 14px", borderRadius: 12, fontWeight: 900, cursor: "pointer" },
+  btnDanger: { border: "2px solid #b91c1c", background: "#fff", color: "#b91c1c", padding: "10px 14px", borderRadius: 12, fontWeight: 900, cursor: "pointer" },
 
   ok: { marginTop: 12, padding: 12, background: "#e9fff0", border: "1px solid #b9ffd0", borderRadius: 14, fontWeight: 900 },
   err: { marginTop: 12, padding: 12, background: "#ffe9e9", border: "1px solid #ffb9b9", borderRadius: 14, fontWeight: 900 },
@@ -723,7 +728,36 @@ const S = {
   modeRow: { marginTop: 14, display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" },
   progress: { marginTop: 12, padding: 10, background: "#fff8e6", border: "1px solid #ffe0a3", borderRadius: 14, fontWeight: 900 },
 
-  grid: { marginTop: 14, display: "grid", gridTemplateColumns: "1fr", gap: 14 },
+  statsGrid: {
+    marginTop: 16,
+    display: "grid",
+    gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+    gap: 12,
+  },
+  statCard: {
+    background: "#f8fbff",
+    border: "1px solid #d7e6ff",
+    borderRadius: 18,
+    padding: 14,
+  },
+  statTitle: {
+    fontSize: 13,
+    fontWeight: 900,
+    color: "#0b4aa8",
+  },
+  statValue: {
+    marginTop: 8,
+    fontSize: 28,
+    fontWeight: 900,
+    color: "#111827",
+  },
+  statSub: {
+    marginTop: 4,
+    fontSize: 12,
+    color: "#6b7280",
+  },
+
+  grid: { marginTop: 16, display: "grid", gridTemplateColumns: "1fr", gap: 14 },
   sourceCard: { border: "1px solid #e6eefc", background: "#f8fbff", borderRadius: 18, padding: 14 },
   sourceHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" },
   sourceTitle: { display: "flex", gap: 12, alignItems: "center" },
@@ -731,8 +765,7 @@ const S = {
   sourceName: { fontSize: 18, fontWeight: 900 },
   sourceHint: { fontSize: 13, color: "#555" },
   sourceActions: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" },
-  sourceBody: { marginTop: 12 },
-  badges: { display: "flex", gap: 8, flexWrap: "wrap" },
+  badges: { marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap" },
   badge: { background: "#fff", border: "1px solid #d7e6ff", padding: "6px 10px", borderRadius: 999, fontSize: 13 },
 
   fixedMap: { marginTop: 10, display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8, fontWeight: 700 },
