@@ -52,7 +52,7 @@ export default function HomePage() {
       agregarHistorial(dniBuscado);
 
       if (!data.found) {
-        new Audio("/sounds/Error.mp3").play();
+        new Audio("/sounds/error.mp3").play();
 
         setResultado({
           estado: "no_existe",
@@ -62,7 +62,7 @@ export default function HomePage() {
       }
 
       if (Number(data.persona?.cuota) === 1) {
-        new Audio("/sounds/Ok.mp3").play();
+        new Audio("/sounds/ok.mp3").play();
 
         setResultado({
           estado: "ok",
@@ -70,7 +70,7 @@ export default function HomePage() {
           persona: data.persona,
         });
       } else {
-        new Audio("/sounds/Error.mp3").play();
+        new Audio("/sounds/error.mp3").play();
 
         setResultado({
           estado: "denegado",
@@ -203,7 +203,7 @@ export default function HomePage() {
           )}
         </div>
 
-        <div style={styles.footerBand}>Rosario Central</div>
+        <div style={styles.footerBand}>Rosario Central 💙💛</div>
       </div>
     </div>
   );
