@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import * as XLSX from "xlsx";
 
 function normalizeDni(dni) {
   return String(dni ?? "").trim().replace(/\D/g, "");
