@@ -290,19 +290,61 @@ export default function AdminPage() {
   }
 
   async function loadDeportick(file) {
-    const text = await file.text();
-    const { headers, items } = parseDeportickPersons(text);
 
-    setVenta({
-      file,
-      headers,
-      items,
-      valid: items.length,
+  let rows = [];
+
+  if (file.name.endsWith(".xlsx") || file.name.endsWith(".xls")) {
+
+    const data = await file.arrayBuffer();
+    const workbook = XLSX.read(data);
+
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    rows = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+
+  } else {
+
+    const text = await file.text();
+    const parsed = parseGenericCSV(text);
+    rows = [parsed.headers, ...parsed.rows];
+
+  }
+
+  if (rows.length < 2) return;
+
+  const dataRows = rows.slice(1);
+
+  const items = [];
+
+  for (const r of dataRows) {
+
+    const dni = normalizeDni(r[0]); // columna 1
+    if (!dni) continue;
+
+    items.push({
+      dni,
+      nombre: String(r[7] ?? "").trim(),       // columna 8
+      tipoIngreso: String(r[5] ?? "").trim(),  // columna 6
+      ubicacion: String(r[6] ?? "").trim(),    // columna 7
+      cuota: 1
     });
 
-    setStatusMsg(`Deportick cargado: ${file.name} — Válidas: ${items.length}`);
-    setErrorMsg("");
   }
+
+  const map = new Map();
+  for (const p of items) map.set(p.dni, p);
+
+  const final = Array.from(map.values());
+
+  setVenta({
+    file,
+    headers: [],
+    items: final,
+    valid: final.length
+  });
+
+  setStatusMsg(`Deportick cargado: ${file.name} — Válidas: ${final.length}`);
+  setErrorMsg("");
+}
 
   async function loadListado(file) {
     const text = await file.text();
