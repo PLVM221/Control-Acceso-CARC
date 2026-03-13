@@ -145,12 +145,6 @@ function parseTipoIngresoMapCSV(text) {
   return map;
 }
 
-// CLEVER fijo:
-// col 3 = nombre
-// col 4 = dni
-// col 14 = nombre ubicación
-// col 16 = tipo ingreso
-// col 19 = cuota
 function parseCleverPersons(text) {
   const rows = parseSemicolonCSV(text);
   if (rows.length < 2) return { headers: [], items: [] };
@@ -181,12 +175,6 @@ function parseCleverPersons(text) {
   };
 }
 
-// DEPORTICK fijo:
-// col 1 = dni
-// col 8 = nombre
-// col 6 = tipo ingreso
-// col 7 = sector/ubicación
-// cuota = 1 fijo
 function parseDeportickPersonsFromRows(rows) {
   const items = [];
 
@@ -209,12 +197,6 @@ function parseDeportickPersonsFromRows(rows) {
   return Array.from(map.values());
 }
 
-// LISTADO fijo:
-// col 3 = nombre
-// col 7 = dni
-// col 8 = id tipo ingreso
-// ubicacion = LIBRE
-// cuota = 1
 function parseListadoPersonsFixed(text, tiposIngresoMap) {
   const { headers, rows } = parseGenericCSV(text);
   if (!headers.length || !rows.length) return { headers: [], items: [] };
@@ -242,6 +224,38 @@ function parseListadoPersonsFixed(text, tiposIngresoMap) {
   return {
     headers,
     items: Array.from(map.values()),
+  };
+}
+
+function getLogStyle(estado) {
+  if (estado === "ok") {
+    return {
+      background: "#dcfce7",
+      border: "1px solid #86efac",
+      color: "#166534",
+    };
+  }
+
+  if (estado === "denegado") {
+    return {
+      background: "#fef3c7",
+      border: "1px solid #fcd34d",
+      color: "#92400e",
+    };
+  }
+
+  if (estado === "no_existe") {
+    return {
+      background: "#ffedd5",
+      border: "1px solid #fdba74",
+      color: "#9a3412",
+    };
+  }
+
+  return {
+    background: "#fee2e2",
+    border: "1px solid #fca5a5",
+    color: "#991b1b",
   };
 }
 
@@ -273,6 +287,9 @@ export default function AdminPage() {
     ultimaActualizacion: null,
   });
 
+  const [logs, setLogs] = useState([]);
+  const [logDniFilter, setLogDniFilter] = useState("");
+
   const [statusMsg, setStatusMsg] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
   const [progress, setProgress] = useState(null);
@@ -283,6 +300,7 @@ export default function AdminPage() {
     setLogged(true);
     setStatusMsg("Logueado ✅");
     loadStats();
+    loadLogs();
   }
 
   function logout() {
@@ -301,12 +319,42 @@ export default function AdminPage() {
     return () => window.removeEventListener("keydown", onKey);
   }, [logged, password]);
 
+  useEffect(() => {
+    if (!logged) return;
+
+    loadLogs();
+    const id = setInterval(() => {
+      loadLogs();
+    }, 5000);
+
+    return () => clearInterval(id);
+  }, [logged]);
+
   async function loadStats() {
     try {
       const res = await fetch("/api/admin/stats");
       const data = await res.json();
       if (res.ok && data.ok) {
         setStats(data.stats);
+      }
+    } catch {}
+  }
+
+  async function loadLogs(dniOverride) {
+    try {
+      const dni = normalizeDni(
+        dniOverride !== undefined ? dniOverride : logDniFilter
+      );
+
+      const url = dni
+        ? `/api/admin/logs?dni=${dni}&limit=80`
+        : `/api/admin/logs?limit=80`;
+
+      const res = await fetch(url);
+      const data = await res.json();
+
+      if (res.ok && data.ok) {
+        setLogs(data.logs || []);
       }
     } catch {}
   }
@@ -494,6 +542,7 @@ export default function AdminPage() {
 
       setStatusMsg("✅ Base completa borrada");
       await loadStats();
+      await loadLogs();
     } catch (e) {
       setErrorMsg(e.message || String(e));
     }
@@ -542,6 +591,7 @@ export default function AdminPage() {
               </select>
 
               <button style={S.btnOutline} onClick={loadStats}>Refrescar estadísticas</button>
+              <button style={S.btnOutline} onClick={() => loadLogs()}>Refrescar logs</button>
               <button style={S.btnDanger} onClick={borrarTodaBase}>Borrar toda la base</button>
             </div>
 
@@ -567,6 +617,79 @@ export default function AdminPage() {
                 value={stats.ultimaActualizacion ? new Date(stats.ultimaActualizacion).toLocaleString("es-AR") : "—"}
                 subtitle="Último cambio en personas"
               />
+            </div>
+
+            <div style={S.logsPanel}>
+              <div style={S.logsTop}>
+                <div style={S.sourceTitle}>
+                  <span style={S.icon}>📡</span>
+                  <div>
+                    <div style={S.sourceName}>Controles en vivo</div>
+                    <div style={S.sourceHint}>Se actualiza cada 5 segundos</div>
+                  </div>
+                </div>
+
+                <div style={S.logsFilters}>
+                  <input
+                    style={S.inputSmall}
+                    type="text"
+                    value={logDniFilter}
+                    onChange={(e) => setLogDniFilter(normalizeDni(e.target.value))}
+                    placeholder="Filtrar por DNI"
+                  />
+                  <button
+                    style={S.btnOutline}
+                    onClick={() => loadLogs(logDniFilter)}
+                  >
+                    Buscar
+                  </button>
+                  <button
+                    style={S.btnOutline}
+                    onClick={() => {
+                      setLogDniFilter("");
+                      loadLogs("");
+                    }}
+                  >
+                    Limpiar filtro
+                  </button>
+                </div>
+              </div>
+
+              <div style={S.logsBox}>
+                {logs.length === 0 ? (
+                  <div style={{ color: "#666" }}>Todavía no hay controles registrados.</div>
+                ) : (
+                  logs.map((log) => (
+                    <div
+                      key={log.id}
+                      style={{
+                        ...S.logItem,
+                        ...getLogStyle(log.estado),
+                      }}
+                    >
+                      <div style={S.logMain}>
+                        <div><b>DNI:</b> {log.dni_buscado || "—"}</div>
+                        <div><b>Nombre:</b> {log.nombre || "—"}</div>
+                        <div><b>Tipo:</b> {log.tipo_ingreso || "—"}</div>
+                        <div><b>Ubicación:</b> {log.ubicacion || "—"}</div>
+                      </div>
+
+                      <div style={S.logSide}>
+                        <div style={{ fontWeight: 900 }}>
+                          {log.estado === "ok"
+                            ? "ACCESO HABILITADO"
+                            : log.estado === "denegado"
+                            ? "CUOTA PENDIENTE"
+                            : log.estado === "no_existe"
+                            ? "DNI NO EXISTE"
+                            : "ERROR"}
+                        </div>
+                        <div>{log.ts ? new Date(log.ts).toLocaleString("es-AR") : "—"}</div>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
             </div>
 
             <div style={S.grid}>
@@ -796,6 +919,7 @@ const S = {
   mini: { marginTop: 6, color: "#666", fontSize: 13 },
   row: { display: "flex", gap: 10, alignItems: "center" },
   input: { flex: 1, borderRadius: 12, border: "1px solid #cfd8e3", padding: "12px 14px", fontSize: 16 },
+  inputSmall: { borderRadius: 12, border: "1px solid #cfd8e3", padding: "10px 12px", fontSize: 14, minWidth: 180 },
   select: { borderRadius: 12, border: "1px solid #cfd8e3", padding: "10px 12px", fontSize: 14, fontWeight: 700 },
   btnPrimary: { border: "none", background: "#0b4aa8", color: "#fff", padding: "12px 16px", borderRadius: 12, fontWeight: 900, cursor: "pointer" },
   btnOutline: { border: "2px solid #0b4aa8", background: "#fff", color: "#0b4aa8", padding: "10px 14px", borderRadius: 12, fontWeight: 900, cursor: "pointer" },
@@ -835,6 +959,53 @@ const S = {
     marginTop: 4,
     fontSize: 12,
     color: "#6b7280",
+  },
+
+  logsPanel: {
+    marginTop: 18,
+    border: "1px solid #e6eefc",
+    background: "#f8fbff",
+    borderRadius: 18,
+    padding: 14,
+  },
+  logsTop: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 12,
+    flexWrap: "wrap",
+  },
+  logsFilters: {
+    display: "flex",
+    gap: 8,
+    alignItems: "center",
+    flexWrap: "wrap",
+  },
+  logsBox: {
+    marginTop: 12,
+    maxHeight: 420,
+    overflowY: "auto",
+    display: "grid",
+    gap: 10,
+  },
+  logItem: {
+    borderRadius: 14,
+    padding: 12,
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 12,
+    flexWrap: "wrap",
+  },
+  logMain: {
+    display: "grid",
+    gap: 4,
+    minWidth: 320,
+  },
+  logSide: {
+    display: "grid",
+    gap: 4,
+    textAlign: "right",
+    marginLeft: "auto",
   },
 
   grid: { marginTop: 16, display: "grid", gridTemplateColumns: "1fr", gap: 14 },
