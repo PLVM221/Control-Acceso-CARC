@@ -38,18 +38,51 @@ export default async function handler(req, res) {
       });
     }
 
+    let estado = "no_existe";
+    let encontrado = false;
+    let nombre = null;
+    let tipo_ingreso = null;
+    let ubicacion = null;
+    let cuota = null;
+
+    if (data) {
+      encontrado = true;
+      nombre = data.nombre ?? null;
+      tipo_ingreso = data.tipo_ingreso ?? null;
+      ubicacion = data.ubicacion ?? null;
+      cuota = Number(data.cuota) === 0 ? 0 : 1;
+      estado = cuota === 1 ? "ok" : "denegado";
+    }
+
+    try {
+      await supabase.from("logs_busqueda").insert({
+        ts: new Date().toISOString(),
+        dni_buscado: dni,
+        encontrado,
+        nombre,
+        tipo_ingreso,
+        ubicacion,
+        cuota,
+        estado,
+      });
+    } catch (logErr) {
+      console.error("Error guardando log_busqueda:", logErr.message);
+    }
+
     try {
       await supabase.from("logs_accesos").insert({
         dni,
-        encontrado: !!data,
+        encontrado,
         fecha: new Date().toISOString(),
       });
-    } catch (e) {
-      console.error("Error guardando log:", e.message);
+    } catch (logErr) {
+      console.error("Error guardando logs_accesos:", logErr.message);
     }
 
     if (!data) {
-      return res.status(200).json({ found: false });
+      return res.status(200).json({
+        found: false,
+      });
     }
 
     return res.status(200).json({
