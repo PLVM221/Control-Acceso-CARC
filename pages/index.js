@@ -284,7 +284,7 @@ export default function HomePage() {
           )}
         </div>
 
-        <div style={styles.footerBand}>Rosario Central 💙💛</div>
+        <div style={styles.footerBand}>Rosario Central</div>
       </div>
     </div>
   );
