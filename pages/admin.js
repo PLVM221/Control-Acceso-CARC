@@ -87,18 +87,15 @@ function parseGenericCSV(text) {
       i++;
       continue;
     }
-
     if (ch === '"') {
       inQuotes = !inQuotes;
       continue;
     }
-
     if (!inQuotes && ch === sep) {
       row.push(cur);
       cur = "";
       continue;
     }
-
     if (!inQuotes && (ch === "\n" || ch === "\r")) {
       if (ch === "\r" && next === "\n") i++;
       row.push(cur);
@@ -107,7 +104,6 @@ function parseGenericCSV(text) {
       cur = "";
       continue;
     }
-
     cur += ch;
   }
 
@@ -164,15 +160,15 @@ function parseCleverPersons(text) {
 
   const items = [];
   for (const r of data) {
-    const dni = normalizeDni(r[3]); // col 4
+    const dni = normalizeDni(r[3]);
     if (!dni) continue;
 
     items.push({
       dni,
-      nombre: String(r[2] ?? "").trim(),        // col 3
-      tipoIngreso: String(r[15] ?? "").trim(),  // col 16
-      ubicacion: String(r[13] ?? "").trim(),    // col 14
-      cuota: to01(r[18]),                       // col 19
+      nombre: String(r[2] ?? "").trim(),
+      tipoIngreso: String(r[15] ?? "").trim(),
+      ubicacion: String(r[13] ?? "").trim(),
+      cuota: to01(r[18]),
     });
   }
 
@@ -195,14 +191,14 @@ function parseDeportickPersonsFromRows(rows) {
   const items = [];
 
   for (const r of rows) {
-    const dni = normalizeDni(r[0]); // col 1
+    const dni = normalizeDni(r[0]);
     if (!dni) continue;
 
     items.push({
       dni,
-      nombre: String(r[7] ?? "").trim(),       // col 8
-      tipoIngreso: String(r[5] ?? "").trim(),  // col 6
-      ubicacion: String(r[6] ?? "").trim(),    // col 7
+      nombre: String(r[7] ?? "").trim(),
+      tipoIngreso: String(r[5] ?? "").trim(),
+      ubicacion: String(r[6] ?? "").trim(),
       cuota: 1,
     });
   }
@@ -226,14 +222,14 @@ function parseListadoPersonsFixed(text, tiposIngresoMap) {
   const items = [];
 
   for (const r of rows) {
-    const dni = normalizeDni(r[6]); // col 7
+    const dni = normalizeDni(r[6]);
     if (!dni) continue;
 
-    const idTipo = String(r[7] ?? "").trim(); // col 8
+    const idTipo = String(r[7] ?? "").trim();
 
     items.push({
       dni,
-      nombre: String(r[2] ?? "").trim(),      // col 3
+      nombre: String(r[2] ?? "").trim(),
       tipoIngreso: tiposIngresoMap[idTipo] || `ID ${idTipo}`,
       ubicacion: "LIBRE",
       cuota: 1,
@@ -257,7 +253,7 @@ export default function AdminPage() {
 
   const [password, setPassword] = useState("");
   const [logged, setLogged] = useState(false);
-  const [mode, setMode] = useState("NUEVO");
+  const [mode, setMode] = useState("AGREGAR");
 
   const [tiposIngresoMap, setTiposIngresoMap] = useState({});
   const [tiposIngresoFile, setTiposIngresoFile] = useState(null);
@@ -541,8 +537,8 @@ export default function AdminPage() {
             <div style={S.modeRow}>
               <div style={S.label}>Modo de carga:</div>
               <select style={S.select} value={mode} onChange={(e) => setMode(e.target.value)}>
-                <option value="NUEVO">NUEVO (borra y carga de cero)</option>
                 <option value="AGREGAR">AGREGAR (no borra, actualiza por DNI)</option>
+                <option value="NUEVO">NUEVO (borra y carga de cero)</option>
               </select>
 
               <button style={S.btnOutline} onClick={loadStats}>Refrescar estadísticas</button>
@@ -597,7 +593,15 @@ export default function AdminPage() {
                         }}
                       />
                     </label>
-                    <button style={S.btnOutline} onClick={() => clearSource("maestro")}>Limpiar</button>
+                    <button
+                      style={S.btnOutline}
+                      onClick={() => {
+                        const ok = confirm("¿Seguro que querés limpiar esta carga?");
+                        if (ok) clearSource("maestro");
+                      }}
+                    >
+                      Limpiar
+                    </button>
                   </div>
                 </div>
                 <div style={S.badges}>
@@ -629,7 +633,15 @@ export default function AdminPage() {
                         }}
                       />
                     </label>
-                    <button style={S.btnOutline} onClick={() => clearSource("abonados")}>Limpiar</button>
+                    <button
+                      style={S.btnOutline}
+                      onClick={() => {
+                        const ok = confirm("¿Seguro que querés limpiar esta carga?");
+                        if (ok) clearSource("abonados");
+                      }}
+                    >
+                      Limpiar
+                    </button>
                     <button style={S.btnPrimary} onClick={() => importarFuente("abonados")}>Importar</button>
                   </div>
                 </div>
@@ -646,7 +658,6 @@ export default function AdminPage() {
                   <div><b>Tipo ingreso</b> → columna 16</div>
                   <div><b>Ubicación</b> → columna 14</div>
                   <div><b>Cuota</b> → columna 19</div>
-                  <div><b>Puerta acceso</b> → no se usa</div>
                 </div>
               </div>
 
@@ -673,7 +684,15 @@ export default function AdminPage() {
                         }}
                       />
                     </label>
-                    <button style={S.btnOutline} onClick={() => clearSource("venta")}>Limpiar</button>
+                    <button
+                      style={S.btnOutline}
+                      onClick={() => {
+                        const ok = confirm("¿Seguro que querés limpiar esta carga?");
+                        if (ok) clearSource("venta");
+                      }}
+                    >
+                      Limpiar
+                    </button>
                     <button style={S.btnPrimary} onClick={() => importarFuente("venta")}>Importar</button>
                   </div>
                 </div>
@@ -690,7 +709,6 @@ export default function AdminPage() {
                   <div><b>Tipo ingreso</b> → columna 6</div>
                   <div><b>Ubicación / Sector</b> → columna 7</div>
                   <div><b>Cuota</b> → fija en 1</div>
-                  <div><b>Puerta acceso</b> → no se usa</div>
                 </div>
               </div>
 
@@ -717,7 +735,15 @@ export default function AdminPage() {
                         }}
                       />
                     </label>
-                    <button style={S.btnOutline} onClick={() => clearSource("listado")}>Limpiar</button>
+                    <button
+                      style={S.btnOutline}
+                      onClick={() => {
+                        const ok = confirm("¿Seguro que querés limpiar esta carga?");
+                        if (ok) clearSource("listado");
+                      }}
+                    >
+                      Limpiar
+                    </button>
                     <button style={S.btnPrimary} onClick={() => importarFuente("listado")}>Importar</button>
                   </div>
                 </div>
