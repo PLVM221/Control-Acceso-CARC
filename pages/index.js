@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
-const LS_HISTORY = "carc_historial_local_v1";
+const LS_HISTORY = "carc_historial_local_v2";
 
 function normalizeDni(v) {
   return String(v ?? "").replace(/\D/g, "").trim();
@@ -17,6 +17,9 @@ export default function HomePage() {
   const [historial, setHistorial] = useState([]);
   const inputRef = useRef(null);
 
+  const okAudioRef = useRef(null);
+  const errorAudioRef = useRef(null);
+
   useEffect(() => {
     try {
       const saved = JSON.parse(localStorage.getItem(LS_HISTORY) || "[]");
@@ -28,10 +31,46 @@ export default function HomePage() {
     localStorage.setItem(LS_HISTORY, JSON.stringify(historial));
   }, [historial]);
 
-  function agregarHistorial(dniBuscado) {
+  useEffect(() => {
+    okAudioRef.current = new Audio("/sounds/ok.mp3");
+    errorAudioRef.current = new Audio("/sounds/error.mp3");
+
+    okAudioRef.current.preload = "auto";
+    errorAudioRef.current.preload = "auto";
+
+    okAudioRef.current.load();
+    errorAudioRef.current.load();
+  }, []);
+
+  function playOk() {
+    try {
+      if (!okAudioRef.current) return;
+      okAudioRef.current.currentTime = 0;
+      okAudioRef.current.play().catch((e) => {
+        console.error("No se pudo reproducir ok.mp3:", e);
+      });
+    } catch (e) {
+      console.error("Error reproduciendo ok.mp3:", e);
+    }
+  }
+
+  function playError() {
+    try {
+      if (!errorAudioRef.current) return;
+      errorAudioRef.current.currentTime = 0;
+      errorAudioRef.current.play().catch((e) => {
+        console.error("No se pudo reproducir error.mp3:", e);
+      });
+    } catch (e) {
+      console.error("Error reproduciendo error.mp3:", e);
+    }
+  }
+
+  function agregarHistorial(dniBuscado, estado) {
     const entry = {
       dni: dniBuscado,
       fecha: nowString(),
+      estado, // ok | denegado | no_existe | error
     };
 
     setHistorial((prev) => [entry, ...prev].slice(0, 50));
@@ -49,10 +88,9 @@ export default function HomePage() {
       const res = await fetch(`/api/buscar?dni=${dniBuscado}`);
       const data = await res.json();
 
-      agregarHistorial(dniBuscado);
-
       if (!data.found) {
-        new Audio("/sounds/error.mp3").play();
+        playError();
+        agregarHistorial(dniBuscado, "no_existe");
 
         setResultado({
           estado: "no_existe",
@@ -62,7 +100,8 @@ export default function HomePage() {
       }
 
       if (Number(data.persona?.cuota) === 1) {
-        new Audio("/sounds/ok.mp3").play();
+        playOk();
+        agregarHistorial(dniBuscado, "ok");
 
         setResultado({
           estado: "ok",
@@ -70,7 +109,8 @@ export default function HomePage() {
           persona: data.persona,
         });
       } else {
-        new Audio("/sounds/error.mp3").play();
+        playError();
+        agregarHistorial(dniBuscado, "denegado");
 
         setResultado({
           estado: "denegado",
@@ -79,6 +119,9 @@ export default function HomePage() {
         });
       }
     } catch (err) {
+      playError();
+      agregarHistorial(dniBuscado, "error");
+
       setResultado({
         estado: "error",
         mensaje: "Error de conexión con el servidor.",
@@ -111,6 +154,38 @@ export default function HomePage() {
       : resultado?.estado === "no_existe"
       ? { bg: "#ffedd5", border: "#fdba74", color: "#9a3412" }
       : { bg: "#fee2e2", border: "#fca5a5", color: "#991b1b" };
+
+  function getHistoryItemStyle(estado) {
+    if (estado === "ok") {
+      return {
+        background: "#dcfce7",
+        border: "1px solid #86efac",
+        color: "#166534",
+      };
+    }
+
+    if (estado === "denegado") {
+      return {
+        background: "#fef3c7",
+        border: "1px solid #fcd34d",
+        color: "#92400e",
+      };
+    }
+
+    if (estado === "no_existe") {
+      return {
+        background: "#ffedd5",
+        border: "1px solid #fdba74",
+        color: "#9a3412",
+      };
+    }
+
+    return {
+      background: "#fee2e2",
+      border: "1px solid #fca5a5",
+      color: "#991b1b",
+    };
+  }
 
   return (
     <div style={styles.page}>
@@ -195,7 +270,13 @@ export default function HomePage() {
             <div style={{ color: "#666" }}>Todavía no hay registros.</div>
           ) : (
             historial.map((h, i) => (
-              <div key={`${h.dni}-${h.fecha}-${i}`} style={styles.historyItem}>
+              <div
+                key={`${h.dni}-${h.fecha}-${i}`}
+                style={{
+                  ...styles.historyItem,
+                  ...getHistoryItemStyle(h.estado),
+                }}
+              >
                 <span style={{ fontWeight: 900 }}>{h.dni}</span>
                 <span>{h.fecha}</span>
               </div>
@@ -203,7 +284,7 @@ export default function HomePage() {
           )}
         </div>
 
-        <div style={styles.footerBand}>Rosario Central</div>
+        <div style={styles.footerBand}>Rosario Central 💙💛</div>
       </div>
     </div>
   );
@@ -325,8 +406,6 @@ const styles = {
     gap: 10,
     padding: "12px 14px",
     borderRadius: 12,
-    background: "#f5d9a6",
-    color: "#111",
     marginBottom: 8,
     fontSize: 16,
   },
