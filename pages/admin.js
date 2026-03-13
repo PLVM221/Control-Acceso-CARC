@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 
+const ADMIN_SESSION_KEY = "carc_admin_session_v1";
+const ADMIN_PASSWORD_KEY = "carc_admin_password_v1";
+
 function normalizeDni(dni) {
   return String(dni ?? "").trim().replace(/\D/g, "");
 }
@@ -259,6 +262,14 @@ function getLogStyle(estado) {
   };
 }
 
+function formatLocalInput(isoString) {
+  if (!isoString) return "";
+  const d = new Date(isoString);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 export default function AdminPage() {
   const fileMaster = useRef(null);
   const fileAb = useRef(null);
@@ -289,27 +300,47 @@ export default function AdminPage() {
 
   const [logs, setLogs] = useState([]);
   const [logDniFilter, setLogDniFilter] = useState("");
+  const [logDesde, setLogDesde] = useState("");
+  const [logHasta, setLogHasta] = useState("");
+
+  const [partidos, setPartidos] = useState([]);
+  const [partidoRival, setPartidoRival] = useState("");
+  const [partidoFechaHora, setPartidoFechaHora] = useState("");
+  const [partidoLogDesde, setPartidoLogDesde] = useState("");
+  const [partidoLogHasta, setPartidoLogHasta] = useState("");
 
   const [statusMsg, setStatusMsg] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
   const [progress, setProgress] = useState(null);
 
-  function doLogin() {
-    setErrorMsg("");
-    if (!password.trim()) return setErrorMsg("Ingresá la contraseña.");
-    setLogged(true);
-    setStatusMsg("Logueado ✅");
+  useEffect(() => {
+    try {
+      const savedSession = localStorage.getItem(ADMIN_SESSION_KEY);
+      const savedPassword = localStorage.getItem(ADMIN_PASSWORD_KEY);
+
+      if (savedSession === "1" && savedPassword) {
+        setPassword(savedPassword);
+        setLogged(true);
+      }
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    if (!logged) return;
     loadStats();
     loadLogs();
-  }
+    loadPartidos();
+  }, [logged]);
 
-  function logout() {
-    setLogged(false);
-    setPassword("");
-    setStatusMsg("");
-    setErrorMsg("");
-    setProgress(null);
-  }
+  useEffect(() => {
+    if (!logged) return;
+
+    const id = setInterval(() => {
+      loadLogs();
+    }, 5000);
+
+    return () => clearInterval(id);
+  }, [logged, logDniFilter, logDesde, logHasta]);
 
   useEffect(() => {
     const onKey = (e) => {
@@ -319,16 +350,31 @@ export default function AdminPage() {
     return () => window.removeEventListener("keydown", onKey);
   }, [logged, password]);
 
-  useEffect(() => {
-    if (!logged) return;
+  function doLogin() {
+    setErrorMsg("");
+    if (!password.trim()) return setErrorMsg("Ingresá la contraseña.");
 
-    loadLogs();
-    const id = setInterval(() => {
-      loadLogs();
-    }, 5000);
+    setLogged(true);
+    setStatusMsg("Logueado ✅");
 
-    return () => clearInterval(id);
-  }, [logged]);
+    try {
+      localStorage.setItem(ADMIN_SESSION_KEY, "1");
+      localStorage.setItem(ADMIN_PASSWORD_KEY, password);
+    } catch {}
+  }
+
+  function logout() {
+    setLogged(false);
+    setPassword("");
+    setStatusMsg("");
+    setErrorMsg("");
+    setProgress(null);
+
+    try {
+      localStorage.removeItem(ADMIN_SESSION_KEY);
+      localStorage.removeItem(ADMIN_PASSWORD_KEY);
+    } catch {}
+  }
 
   async function loadStats() {
     try {
@@ -340,23 +386,117 @@ export default function AdminPage() {
     } catch {}
   }
 
-  async function loadLogs(dniOverride) {
+  async function loadLogs(dniOverride, desdeOverride, hastaOverride) {
     try {
       const dni = normalizeDni(
         dniOverride !== undefined ? dniOverride : logDniFilter
       );
+      const desde = desdeOverride !== undefined ? desdeOverride : logDesde;
+      const hasta = hastaOverride !== undefined ? hastaOverride : logHasta;
 
-      const url = dni
-        ? `/api/admin/logs?dni=${dni}&limit=80`
-        : `/api/admin/logs?limit=80`;
+      const params = new URLSearchParams();
+      params.set("limit", "120");
+      if (dni) params.set("dni", dni);
+      if (desde) params.set("desde", new Date(desde).toISOString());
+      if (hasta) params.set("hasta", new Date(hasta).toISOString());
 
-      const res = await fetch(url);
+      const res = await fetch(`/api/admin/logs?${params.toString()}`);
       const data = await res.json();
 
       if (res.ok && data.ok) {
         setLogs(data.logs || []);
       }
     } catch {}
+  }
+
+  async function loadPartidos() {
+    try {
+      const res = await fetch("/api/admin/partidos");
+      const data = await res.json();
+
+      if (res.ok && data.ok) {
+        setPartidos(data.partidos || []);
+      }
+    } catch {}
+  }
+
+  async function crearPartido() {
+    setErrorMsg("");
+    setStatusMsg("");
+
+    if (!partidoRival.trim() || !partidoLogDesde || !partidoLogHasta) {
+      setErrorMsg("Completá rival, desde y hasta.");
+      return;
+    }
+
+    try {
+      const res = await fetch("/api/admin/partidos", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          password,
+          rival: partidoRival.trim(),
+          fecha_hora_partido: partidoFechaHora ? new Date(partidoFechaHora).toISOString() : null,
+          log_desde: new Date(partidoLogDesde).toISOString(),
+          log_hasta: new Date(partidoLogHasta).toISOString(),
+          activo: true,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.detail || data.error || "No se pudo guardar el partido");
+      }
+
+      setStatusMsg("✅ Partido guardado");
+      setPartidoRival("");
+      setPartidoFechaHora("");
+      setPartidoLogDesde("");
+      setPartidoLogHasta("");
+      await loadPartidos();
+    } catch (e) {
+      setErrorMsg(e.message || String(e));
+    }
+  }
+
+  async function borrarPartido(id) {
+    const ok = confirm("¿Seguro que querés borrar este partido?");
+    if (!ok) return;
+
+    setErrorMsg("");
+    setStatusMsg("");
+
+    try {
+      const res = await fetch("/api/admin/partidos", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          password,
+          id,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.detail || data.error || "No se pudo borrar el partido");
+      }
+
+      setStatusMsg("✅ Partido borrado");
+      await loadPartidos();
+    } catch (e) {
+      setErrorMsg(e.message || String(e));
+    }
+  }
+
+  function exportarLogsCsv() {
+    const params = new URLSearchParams();
+    if (logDniFilter) params.set("dni", normalizeDni(logDniFilter));
+    if (logDesde) params.set("desde", new Date(logDesde).toISOString());
+    if (logHasta) params.set("hasta", new Date(logHasta).toISOString());
+
+    window.open(`/api/admin/export-logs?${params.toString()}`, "_blank");
   }
 
   async function loadTiposIngresoMaster(file) {
@@ -577,7 +717,7 @@ export default function AdminPage() {
               />
               <button style={S.btnPrimary} onClick={doLogin}>Entrar</button>
             </div>
-            <div style={S.mini}>Tip: podés entrar con Enter.</div>
+            <div style={S.mini}>Tip: podés entrar con Enter y recuerda la sesión en este navegador.</div>
             {errorMsg ? <div style={S.err}>❌ {errorMsg}</div> : null}
             {statusMsg ? <div style={S.ok}>✅ {statusMsg}</div> : null}
           </div>
@@ -619,13 +759,76 @@ export default function AdminPage() {
               />
             </div>
 
+            <div style={S.partidosPanel}>
+              <div style={S.sourceTitle}>
+                <span style={S.icon}>🏟️</span>
+                <div>
+                  <div style={S.sourceName}>Configuración de partidos</div>
+                  <div style={S.sourceHint}>Los logs se asignan automáticamente al partido activo según horario</div>
+                </div>
+              </div>
+
+              <div style={S.partidoFormGrid}>
+                <input
+                  style={S.inputSmall}
+                  value={partidoRival}
+                  onChange={(e) => setPartidoRival(e.target.value)}
+                  placeholder='Rosario Central vs. [completar rival]'
+                />
+                <input
+                  style={S.inputSmall}
+                  type="datetime-local"
+                  value={partidoFechaHora}
+                  onChange={(e) => setPartidoFechaHora(e.target.value)}
+                />
+                <input
+                  style={S.inputSmall}
+                  type="datetime-local"
+                  value={partidoLogDesde}
+                  onChange={(e) => setPartidoLogDesde(e.target.value)}
+                />
+                <input
+                  style={S.inputSmall}
+                  type="datetime-local"
+                  value={partidoLogHasta}
+                  onChange={(e) => setPartidoLogHasta(e.target.value)}
+                />
+                <button style={S.btnPrimary} onClick={crearPartido}>Guardar partido</button>
+              </div>
+
+              <div style={S.partidoLegend}>
+                <span><b>Partido:</b> Rosario Central vs. {partidoRival || "..."}</span>
+                <span><b>Campo 2:</b> fecha/hora del partido</span>
+                <span><b>Campo 3:</b> desde cuándo grabar logs</span>
+                <span><b>Campo 4:</b> hasta cuándo grabar logs</span>
+              </div>
+
+              <div style={S.partidosList}>
+                {partidos.length === 0 ? (
+                  <div style={{ color: "#666" }}>Todavía no hay partidos configurados.</div>
+                ) : (
+                  partidos.map((p) => (
+                    <div key={p.id} style={S.partidoItem}>
+                      <div>
+                        <div style={{ fontWeight: 900 }}>Rosario Central vs. {p.rival}</div>
+                        <div>Partido: {p.fecha_hora_partido ? new Date(p.fecha_hora_partido).toLocaleString("es-AR") : "—"}</div>
+                        <div>Logs desde: {p.log_desde ? new Date(p.log_desde).toLocaleString("es-AR") : "—"}</div>
+                        <div>Logs hasta: {p.log_hasta ? new Date(p.log_hasta).toLocaleString("es-AR") : "—"}</div>
+                      </div>
+                      <button style={S.btnDanger} onClick={() => borrarPartido(p.id)}>Borrar</button>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
             <div style={S.logsPanel}>
               <div style={S.logsTop}>
                 <div style={S.sourceTitle}>
                   <span style={S.icon}>📡</span>
                   <div>
                     <div style={S.sourceName}>Controles en vivo</div>
-                    <div style={S.sourceHint}>Se actualiza cada 5 segundos</div>
+                    <div style={S.sourceHint}>Se actualiza cada 5 segundos y respeta el mismo color que ve el usuario</div>
                   </div>
                 </div>
 
@@ -637,9 +840,21 @@ export default function AdminPage() {
                     onChange={(e) => setLogDniFilter(normalizeDni(e.target.value))}
                     placeholder="Filtrar por DNI"
                   />
+                  <input
+                    style={S.inputSmall}
+                    type="datetime-local"
+                    value={logDesde}
+                    onChange={(e) => setLogDesde(e.target.value)}
+                  />
+                  <input
+                    style={S.inputSmall}
+                    type="datetime-local"
+                    value={logHasta}
+                    onChange={(e) => setLogHasta(e.target.value)}
+                  />
                   <button
                     style={S.btnOutline}
-                    onClick={() => loadLogs(logDniFilter)}
+                    onClick={() => loadLogs(logDniFilter, logDesde, logHasta)}
                   >
                     Buscar
                   </button>
@@ -647,10 +862,15 @@ export default function AdminPage() {
                     style={S.btnOutline}
                     onClick={() => {
                       setLogDniFilter("");
-                      loadLogs("");
+                      setLogDesde("");
+                      setLogHasta("");
+                      loadLogs("", "", "");
                     }}
                   >
                     Limpiar filtro
+                  </button>
+                  <button style={S.btnPrimary} onClick={exportarLogsCsv}>
+                    Exportar CSV
                   </button>
                 </div>
               </div>
@@ -672,6 +892,7 @@ export default function AdminPage() {
                         <div><b>Nombre:</b> {log.nombre || "—"}</div>
                         <div><b>Tipo:</b> {log.tipo_ingreso || "—"}</div>
                         <div><b>Ubicación:</b> {log.ubicacion || "—"}</div>
+                        <div><b>Partido:</b> {log.partido || "—"}</div>
                       </div>
 
                       <div style={S.logSide}>
@@ -774,14 +995,6 @@ export default function AdminPage() {
                   <span style={S.badge}>Cargados en panel: <b>{abonados.valid}</b></span>
                   <span style={S.badge}>Fuente en base: <b>{stats.abonados}</b></span>
                 </div>
-
-                <div style={S.fixedMap}>
-                  <div><b>DNI</b> → columna 4</div>
-                  <div><b>Nombre</b> → columna 3</div>
-                  <div><b>Tipo ingreso</b> → columna 16</div>
-                  <div><b>Ubicación</b> → columna 14</div>
-                  <div><b>Cuota</b> → columna 19</div>
-                </div>
               </div>
 
               <div style={S.sourceCard}>
@@ -824,14 +1037,6 @@ export default function AdminPage() {
                   <span style={S.badge}>Archivo: <b>{venta.file ? venta.file.name : "—"}</b></span>
                   <span style={S.badge}>Cargados en panel: <b>{venta.valid}</b></span>
                   <span style={S.badge}>Fuente en base: <b>{stats.venta}</b></span>
-                </div>
-
-                <div style={S.fixedMap}>
-                  <div><b>DNI</b> → columna 1</div>
-                  <div><b>Nombre</b> → columna 8</div>
-                  <div><b>Tipo ingreso</b> → columna 6</div>
-                  <div><b>Ubicación / Sector</b> → columna 7</div>
-                  <div><b>Cuota</b> → fija en 1</div>
                 </div>
               </div>
 
@@ -876,15 +1081,6 @@ export default function AdminPage() {
                   <span style={S.badge}>Cargados en panel: <b>{listado.valid}</b></span>
                   <span style={S.badge}>Fuente en base: <b>{stats.listado}</b></span>
                 </div>
-
-                <div style={S.fixedMap}>
-                  <div><b>DNI</b> → columna 7</div>
-                  <div><b>Nombre</b> → columna 3</div>
-                  <div><b>ID tipo ingreso</b> → columna 8</div>
-                  <div><b>Tipo ingreso</b> → desde maestro</div>
-                  <div><b>Ubicación</b> → LIBRE</div>
-                  <div><b>Cuota</b> → fija en 1</div>
-                </div>
               </div>
             </div>
 
@@ -905,7 +1101,7 @@ const S = {
       'Lexend, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, sans-serif',
   },
   cardWide: {
-    maxWidth: 1200,
+    maxWidth: 1240,
     margin: "0 auto",
     background: "#fff",
     borderRadius: 24,
@@ -959,6 +1155,43 @@ const S = {
     marginTop: 4,
     fontSize: 12,
     color: "#6b7280",
+  },
+
+  partidosPanel: {
+    marginTop: 18,
+    border: "1px solid #e6eefc",
+    background: "#f8fbff",
+    borderRadius: 18,
+    padding: 14,
+  },
+  partidoFormGrid: {
+    marginTop: 12,
+    display: "grid",
+    gridTemplateColumns: "repeat(5, minmax(0, 1fr))",
+    gap: 10,
+  },
+  partidoLegend: {
+    marginTop: 10,
+    display: "grid",
+    gap: 4,
+    color: "#555",
+    fontSize: 13,
+  },
+  partidosList: {
+    marginTop: 12,
+    display: "grid",
+    gap: 10,
+  },
+  partidoItem: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 12,
+    alignItems: "center",
+    padding: 12,
+    borderRadius: 14,
+    background: "#fff",
+    border: "1px solid #d7e6ff",
+    flexWrap: "wrap",
   },
 
   logsPanel: {
@@ -1018,8 +1251,6 @@ const S = {
   sourceActions: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" },
   badges: { marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap" },
   badge: { background: "#fff", border: "1px solid #d7e6ff", padding: "6px 10px", borderRadius: 999, fontSize: 13 },
-
-  fixedMap: { marginTop: 10, display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8, fontWeight: 700 },
 
   footer: { marginTop: 12, fontSize: 13, color: "#333" },
 };
