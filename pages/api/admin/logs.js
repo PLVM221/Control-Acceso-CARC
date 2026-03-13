@@ -16,16 +16,26 @@ export default async function handler(req, res) {
 
   try {
     const dni = normalizeDni(req.query.dni || "");
-    const limit = Math.min(Number(req.query.limit || 50), 200);
+    const desde = req.query.desde || "";
+    const hasta = req.query.hasta || "";
+    const limit = Math.min(Number(req.query.limit || 80), 500);
 
     let query = supabase
       .from("logs_busqueda")
-      .select("id, ts, dni_buscado, encontrado, nombre, tipo_ingreso, ubicacion, cuota, estado")
+      .select("id, ts, dni_buscado, encontrado, nombre, tipo_ingreso, ubicacion, cuota, estado, partido")
       .order("ts", { ascending: false })
       .limit(limit);
 
     if (dni) {
       query = query.eq("dni_buscado", dni);
+    }
+
+    if (desde) {
+      query = query.gte("ts", desde);
+    }
+
+    if (hasta) {
+      query = query.lte("ts", hasta);
     }
 
     const { data, error } = await query;
