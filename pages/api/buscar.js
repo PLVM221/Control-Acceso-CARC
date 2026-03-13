@@ -9,6 +9,32 @@ function normalizeDni(dni) {
   return String(dni ?? "").trim().replace(/\D/g, "");
 }
 
+async function getPartidoActivo() {
+  const nowIso = new Date().toISOString();
+
+  const { data, error } = await supabase
+    .from("partidos_config")
+    .select("id, rival, fecha_hora_partido, log_desde, log_hasta, activo")
+    .eq("activo", true)
+    .lte("log_desde", nowIso)
+    .gte("log_hasta", nowIso)
+    .order("log_desde", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    console.error("Error buscando partido activo:", error.message);
+    return null;
+  }
+
+  if (!data) return null;
+
+  return {
+    ...data,
+    partido: `Rosario Central vs. ${data.rival}`,
+  };
+}
+
 export default async function handler(req, res) {
   if (req.method !== "GET") {
     return res.status(405).json({ error: "Método no permitido" });
@@ -23,6 +49,9 @@ export default async function handler(req, res) {
         error: "DNI inválido",
       });
     }
+
+    const partidoActivo = await getPartidoActivo();
+    const nombrePartido = partidoActivo?.partido || "Sin partido activo";
 
     const { data, error } = await supabase
       .from("personas")
@@ -64,9 +93,10 @@ export default async function handler(req, res) {
         ubicacion,
         cuota,
         estado,
+        partido: nombrePartido,
       });
     } catch (logErr) {
-      console.error("Error guardando log_busqueda:", logErr.message);
+      console.error("Error guardando logs_busqueda:", logErr.message);
     }
 
     try {
@@ -74,6 +104,7 @@ export default async function handler(req, res) {
         dni,
         encontrado,
         fecha: new Date().toISOString(),
+        partido: nombrePartido,
       });
     } catch (logErr) {
       console.error("Error guardando logs_accesos:", logErr.message);
@@ -87,6 +118,7 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       found: true,
+      partido: nombrePartido,
       persona: {
         dni: data.dni,
         nombre: data.nombre,
